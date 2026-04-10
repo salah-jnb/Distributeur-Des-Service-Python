@@ -1,19 +1,19 @@
 import requests
-from src.config.config import settings
+import os
+
 
 class N8NClient:
     def __init__(self):
-        self.url = settings.N8N_URL
+        self.webhook_url = os.getenv("N8N_WEBHOOK_URL")
+        # AJOUTE CETTE LIGNE POUR VÉRIFIER :
+        print(f"DEBUG: URL n8n chargée depuis le .env -> {self.webhook_url}")
+    def trigger_workflow(self, data: dict):
+        if not self.webhook_url:
+            return {"status": "error", "message": "N8N_WEBHOOK_URL non configuré dans le .env"}
 
-    def send_to_workflow(self, user_question: str, user_id: str):
-        payload = {
-            "chatInput": user_question,
-            "userId": user_id
-        }
         try:
-            response = requests.post(self.url, json=payload)
+            response = requests.post(self.webhook_url, json=data)
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"Erreur n8n: {e}")
-            return None
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
