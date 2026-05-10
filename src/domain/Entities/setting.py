@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+
+
 @dataclass
 class Setting:
     id: int
@@ -8,3 +10,4 @@ class Setting:
     motdepasse: str
     etat: bool
     caractere: str
+    langue: str = ""

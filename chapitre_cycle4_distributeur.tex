@@ -1,0 +1,671 @@
+﻿\chapter{Cycle 4 : Distributeur de Services}
+\chaptermark{Distributeur de Services}
+
+%------------------------------------------------------------------
+\section{Introduction}
+%------------------------------------------------------------------
+
+Dans tout Ã©cosystÃ¨me logiciel distribuÃ©, il existe un composant
+central dont dÃ©pend la cohÃ©rence et la fluiditÃ© de l'ensemble.
+Dans notre projet de robot intelligent, ce rÃ´le est assurÃ© par
+le \textbf{Distributeur de Services} : l'application backend.
+Ce composant constitue le cÅ“ur nÃ©vralgique de l'architecture~;
+il est responsable de la rÃ©ception, du traitement et de la
+redistribution de toutes les requÃªtes Ã©manant des diffÃ©rents
+acteurs du systÃ¨me.
+
+ConformÃ©ment Ã  la mÃ©thodologie cyclique adoptÃ©e dans ce rapport,
+ce quatriÃ¨me cycle se concentre exclusivement sur ce composant.
+Chaque cycle vise Ã  livrer un composant fonctionnel, testable et
+intÃ©grable de maniÃ¨re incrÃ©mentale~; le Distributeur de Services
+reprÃ©sente ainsi le cycle le plus complexe et le plus structurant
+du projet.
+
+Le backend assume plusieurs responsabilitÃ©s simultanÃ©ment~: il
+joue le rÃ´le d'intermÃ©diaire entre la base de donnÃ©es PostgreSQL
+hÃ©bergÃ©e sur Supabase et les autres composants~; il achemine les
+flux de donnÃ©es vers le moteur d'automatisation n8n~; il expose
+les services nÃ©cessaires Ã  l'application mobile multiplateforme~;
+et il assure l'interface temps rÃ©el avec le systÃ¨me embarquÃ© du
+robot physique. Il intÃ¨gre Ã©galement des capacitÃ©s avancÃ©es telles
+que la reconnaissance de personnes, la synthÃ¨se vocale et la
+transcription audio via les services Azure Cognitive Services et
+l'API Gemini.
+
+\begin{tcolorbox}[colback=blue!5!white, colframe=blue!60!black,
+  title=\textbf{RÃ´le principal du Distributeur de Services}]
+Centraliser et redistribuer l'ensemble des communications entre
+tous les composants de l'Ã©cosystÃ¨me (robot physique, workflow n8n,
+application mobile, base de donnÃ©es, services cloud), tout en
+garantissant la sÃ©curitÃ©, la fiabilitÃ© et la scalabilitÃ© du
+systÃ¨me.
+\end{tcolorbox}
+
+%------------------------------------------------------------------
+\section{Architecture UtilisÃ©e}
+%------------------------------------------------------------------
+
+\subsection{Choix du langage : Python}
+
+Le choix de Python comme langage de dÃ©veloppement du backend
+rÃ©sulte d'une analyse rigoureuse des besoins fonctionnels et
+techniques du projet. Trois raisons majeures ont orientÃ© cette
+dÃ©cision.
+
+PremiÃ¨rement, Python dispose d'un Ã©cosystÃ¨me exceptionnel pour
+les domaines mobilisÃ©s par notre projet~: intelligence artificielle,
+traitement du signal audio, vision par ordinateur et communications
+temps rÃ©el. Des bibliothÃ¨ques telles que \texttt{face\_recognition},
+\texttt{NumPy} ou les SDK officiels d'Azure et de Google (Gemini)
+sont nativement disponibles et parfaitement documentÃ©es.
+
+DeuxiÃ¨mement, le framework \textbf{FastAPI} â€” retenu pour la
+construction des endpoints REST â€” est entiÃ¨rement basÃ© sur Python.
+Il offre des performances comparables Ã  Node.js grÃ¢ce Ã  son support
+natif de l'asynchronisme (\texttt{asyncio}), tout en permettant la
+gÃ©nÃ©ration automatique de la documentation Swagger et la validation
+des donnÃ©es via Pydantic.
+
+TroisiÃ¨mement, la communautÃ© Python est l'une des plus actives du
+monde open-source, ce qui garantit une maintenance facilitÃ©e, une
+abondance de solutions aux problÃ¨mes rencontrÃ©s et une meilleure
+pÃ©rennitÃ© du projet.
+
+\begin{table}[H]
+\centering
+\caption{Comparaison des technologies backend envisagÃ©es}
+\label{tab:backend_comparison}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{CritÃ¨re} &
+\textbf{Python + FastAPI} &
+\textbf{Node.js + Express} &
+\textbf{Java Spring Boot} \\
+\hline
+BibliothÃ¨ques IA/ML        & \checkmark\ Excellent   & $\sim$ LimitÃ©   & $\sim$ LimitÃ©   \\
+Performance async          & \checkmark\ asyncio     & \checkmark\ Natif & \checkmark\ Natif \\
+IntÃ©gration Azure SDK      & \checkmark\ Officiel    & \checkmark\ Officiel & \checkmark\ Officiel \\
+FacilitÃ© de dÃ©veloppement  & \checkmark\ TrÃ¨s rapide & \checkmark\ Rapide & $\sim$ Verbeux \\
+Reconnaissance visage      & \checkmark\ face\_recog & $\times$ Inexistant & $\sim$ Complexe \\
+DÃ©ploiement Docker         & \checkmark\ Simple      & \checkmark\ Simple & $\sim$ Lourd \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Clean Architecture : principes et application}
+
+La \textbf{Clean Architecture}, thÃ©orisÃ©e par Robert C.~Martin
+(\textit{Uncle Bob}), repose sur un principe fondamental~: sÃ©parer
+les prÃ©occupations en couches concentriques indÃ©pendantes, de sorte
+que les rÃ¨gles mÃ©tier du domaine ne dÃ©pendent d'aucune technologie
+externe. Cette indÃ©pendance garantit la testabilitÃ©, la
+maintenabilitÃ© et l'Ã©volutivitÃ© du systÃ¨me.
+
+Notre backend est structurÃ© autour de quatre couches principales,
+chacune dotÃ©e d'un rÃ´le prÃ©cis et de dÃ©pendances strictement
+orientÃ©es vers l'intÃ©rieur.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.65\textwidth]{public/cleanarchitechture.png}
+  \caption{Structure en couches de la Clean Architecture appliquÃ©e}
+  \label{fig:clean_arch}
+\end{figure}
+
+\paragraph{Couche Entities (Domain).}
+Cette couche contient les objets mÃ©tier purs, implÃ©mentÃ©s sous forme
+de \texttt{dataclass} Python. Le projet dÃ©finit huit entitÃ©s
+distinctes~:
+
+\begin{itemize}[noitemsep]
+  \item \texttt{Utilisateur} â€” identifiant, nom et URL de la photo
+        stockÃ©e dans le bucket Supabase Storage.
+  \item \texttt{Conversation} â€” question posÃ©e, date, type de
+        question et identitÃ© de la personne.
+  \item \texttt{Historique} â€” journal complet question/rÃ©ponse avec
+        horodatage et classification.
+  \item \texttt{Note} â€” contenu textuel et Ã©tat (actif/inactif).
+  \item \texttt{Agenda} â€” titre, note, contenu, Ã©tat et date de
+        derniÃ¨re modification.
+  \item \texttt{Activity} â€” titre, description, Ã©tat, date et
+        horodatage de crÃ©ation.
+  \item \texttt{Setting} â€” nom, sexe, date, mot de passe, Ã©tat
+        (marche/arrÃªt) et caractÃ¨re du robot.
+  \item \texttt{InformationPersonelle} â€” question, rÃ©ponse, date,
+        acteur et type de question.
+\end{itemize}
+
+Ces entitÃ©s n'ont aucune dÃ©pendance externe et reprÃ©sentent les
+rÃ¨gles mÃ©tier les plus stables du systÃ¨me.
+
+\paragraph{Couche Presentation (Interfaces abstraites).}
+Cette couche dÃ©finit le contrat de service via l'interface abstraite
+\texttt{IApiService}. Cette classe abstraite Python (\texttt{ABC})
+dÃ©clare l'ensemble des mÃ©thodes que toute implÃ©mentation de service
+doit fournir~: gestion des utilisateurs, des conversations, des
+notes, des agendas, des activitÃ©s, de la reconnaissance faciale,
+du contrÃ´le d'alimentation et des services audio. Ce contrat
+garantit l'inversion de dÃ©pendances conforme aux principes SOLID.
+
+\paragraph{Couche Application (Use Cases).}
+La classe \texttt{ApiServiceImpl} implÃ©mente l'interface
+\texttt{IApiService} et orchestre tous les cas d'usage mÃ©tier.
+Elle coordonne les appels Ã  la base de donnÃ©es Supabase, au client
+n8n, aux services Azure Speech et au moteur de reconnaissance
+faciale. Cette couche contient Ã©galement la logique de cache
+des encodages faciaux et la gestion des conversions de types
+(boolÃ©ens, dates).
+
+\paragraph{Couche Infrastructure (Frameworks \& Drivers).}
+Cette couche regroupe les implÃ©mentations techniques concrÃ¨tes~:
+le connecteur Supabase (\texttt{database.py}), le client HTTP
+pour n8n (\texttt{n8n\_client.py}) et le module de configuration
+(\texttt{config.py}) qui charge les variables d'environnement.
+
+\subsection{Structure des rÃ©pertoires du projet}
+
+L'arborescence du projet reflÃ¨te fidÃ¨lement les couches de la
+Clean Architecture~:
+
+\begin{verbatim}
+Distributeur/
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ main.py                  # Point d'entrÃ©e FastAPI
+â”‚   â”œâ”€â”€ config/
+â”‚   â”‚   â””â”€â”€ config.py            # Chargement des variables .env
+â”‚   â”œâ”€â”€ domain/
+â”‚   â”‚   â”œâ”€â”€ Entities/            # 8 entitÃ©s mÃ©tier (dataclass)
+â”‚   â”‚   â”œâ”€â”€ Estnum/              # Ã‰numÃ©rations du domaine
+â”‚   â”‚   â””â”€â”€ Exceptions/          # Exceptions mÃ©tier personnalisÃ©es
+â”‚   â”œâ”€â”€ presentation/
+â”‚   â”‚   â””â”€â”€ services_interfaces.py  # Interface abstraite IApiService
+â”‚   â”œâ”€â”€ application/
+â”‚   â”‚   â””â”€â”€ app_service_impl.py  # ImplÃ©mentation des cas d'usage
+â”‚   â”œâ”€â”€ controllers/
+â”‚   â”‚   â”œâ”€â”€ api_controllers.py   # Routeurs FastAPI (25 endpoints)
+â”‚   â”‚   â””â”€â”€ schemas.py           # SchÃ©mas Pydantic de validation
+â”‚   â””â”€â”€ infrastructure/
+â”‚       â”œâ”€â”€ database.py          # Connecteur Supabase
+â”‚       â””â”€â”€ n8n_client.py        # Client HTTP pour n8n
+â”œâ”€â”€ tests/
+â”‚   â””â”€â”€ unit/                    # Tests unitaires
+â”œâ”€â”€ migrations/
+â”‚   â””â”€â”€ 001_create_agenda_activity.sql
+â”œâ”€â”€ requirements.txt
+â””â”€â”€ .env                         # Variables d'environnement
+\end{verbatim}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.55\textwidth]{public/structurepython.png}
+  \caption{Arborescence du projet backend}
+  \label{fig:structure_python}
+\end{figure}
+%------------------------------------------------------------------
+\section{FonctionnalitÃ©s Techniques}
+%------------------------------------------------------------------
+
+\subsection{Communication avec la base de donnÃ©es (Supabase / PostgreSQL)}
+
+La couche de persistance repose sur PostgreSQL hÃ©bergÃ© via
+\textbf{Supabase}, une plateforme Backend-as-a-Service (BaaS)
+offrant une interface REST, un systÃ¨me d'authentification intÃ©grÃ©
+et un tableau de bord d'administration. Notre backend communique
+avec Supabase via le SDK Python officiel \texttt{supabase-py},
+qui encapsule les appels REST Ã  l'API PostgREST de Supabase.
+
+Le module \texttt{database.py} expose une fonction
+\texttt{get\_supabase\_client()} qui instancie le client Supabase
+Ã  partir des variables d'environnement \texttt{SUPABASE\_URL} et
+\texttt{SUPABASE\_KEY}. Ce client est ensuite injectÃ© dans la
+couche Application pour toutes les opÃ©rations CRUD.
+
+Les principales tables gÃ©rÃ©es par le backend sont les suivantes~:
+\texttt{utilisateur} (profils et URLs des photos faciales),
+\texttt{conversation} (historique des questions posÃ©es au robot),
+\texttt{historique} (journal complet questions/rÃ©ponses),
+\texttt{note} (notes et tÃ¢ches), \texttt{agenda} (planification
+avec suivi de modification), \texttt{setting} (paramÃ¨tres globaux
+du robot) et \texttt{information\_personelle} (base de
+connaissances personnelles). Chaque opÃ©ration de lecture/Ã©criture
+est encapsulÃ©e dans le service \texttt{ApiServiceImpl},
+conformÃ©ment aux principes de la Clean Architecture.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.80\textwidth]{public/dcp.png}
+  \caption{Diagramme de classes de persistance}
+  \label{fig:dcp}
+\end{figure}
+
+\subsection{Services Azure : Speech-to-Text et Text-to-Speech}
+
+L'intÃ©gration des services cognitifs Azure confÃ¨re au robot la
+capacitÃ© de comprendre et de produire de la parole naturelle. Deux
+services sont mis en Å“uvre~: \textbf{Azure Speech-to-Text (STT)}
+pour transcrire la voix de l'interlocuteur en texte, et
+\textbf{Azure Text-to-Speech (TTS)} pour synthÃ©tiser une rÃ©ponse
+vocale Ã  partir d'un texte produit par le systÃ¨me.
+
+L'implÃ©mentation utilise le SDK \texttt{azure-cognitiveservices-speech}
+avec une architecture de chargement conditionnel~: si le SDK n'est
+pas installÃ©, le service lÃ¨ve une exception explicite au lieu de
+provoquer une erreur d'importation silencieuse. La configuration
+repose sur quatre variables d'environnement~:
+\texttt{AZURE\_SPEECH\_KEY}, \texttt{AZURE\_SPEECH\_REGION},
+\texttt{AZURE\_SPEECH\_VOICE} et
+\texttt{AZURE\_SPEECH\_RECOGNITION\_LANGUAGE}.
+
+Pour le STT, les donnÃ©es audio sont injectÃ©es dans un
+\texttt{PushAudioInputStream} avec un format de flux compressÃ©
+(\texttt{AudioStreamContainerFormat.ANY}), puis traitÃ©es par un
+\texttt{SpeechRecognizer} configurÃ© pour la langue arabe
+(\texttt{ar-SA}). Le rÃ©sultat est classifiÃ© en trois statuts~:
+\texttt{success} (parole reconnue), \texttt{no\_match} (aucune
+correspondance) ou erreur annulÃ©e avec dÃ©tails.
+
+Pour le TTS, un \texttt{SpeechSynthesizer} sans configuration
+audio de sortie gÃ©nÃ¨re les donnÃ©es audio en mÃ©moire. La voix
+neurale par dÃ©faut est \texttt{ar-SA-HamedNeural}, paramÃ©trable
+par requÃªte. Le flux audio rÃ©sultant est renvoyÃ© au format WAV
+via un \texttt{StreamingResponse} FastAPI.
+
+L'\textbf{API Gemini} de Google enrichit les capacitÃ©s
+conversationnelles~: une fois la parole transcrite par Azure STT,
+le texte est transmis Ã  Gemini via le workflow n8n pour la
+gÃ©nÃ©ration d'une rÃ©ponse contextuelle, laquelle est ensuite
+synthÃ©tisÃ©e par Azure TTS et renvoyÃ©e au robot.
+
+Les endpoints audio exposÃ©s sont les suivants~:
+
+\begin{table}[H]
+\centering
+\caption{Endpoints des services audio Azure}
+\label{tab:endpoints_audio}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|c|p{7cm}|}
+\hline
+\textbf{Endpoint} & \textbf{MÃ©thode} & \textbf{Description} \\
+\hline
+\texttt{/api/audio/speech-to-text} & \texttt{POST}
+  & ReÃ§oit un fichier audio et retourne la transcription textuelle
+    via Azure STT \\
+\hline
+\texttt{/api/audio/text-to-speech} & \texttt{POST}
+  & ReÃ§oit un texte (et optionnellement un nom de voix) et
+    retourne un flux audio WAV synthÃ©tisÃ© \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Service de reconnaissance des personnes}
+
+Le moteur de \textbf{reconnaissance faciale} est l'un des services
+les plus innovants du backend. Il permet au robot d'identifier en
+temps rÃ©el les personnes qu'il rencontre, lui confÃ©rant une
+capacitÃ© d'interaction personnalisÃ©e et contextuelle. Il s'appuie
+sur la bibliothÃ¨que Python \texttt{face\_recognition}, qui utilise
+en interne des rÃ©seaux de neurones profonds (dlib) pour gÃ©nÃ©rer
+des encodages faciaux â€” vecteurs de 128 dimensions â€” Ã  partir
+d'images.
+
+Le processus se dÃ©roule en deux phases. Lors de
+\textbf{l'enregistrement}, un profil est crÃ©Ã© dans la table
+\texttt{utilisateur} avec le nom et l'URL de la photo stockÃ©e
+dans le bucket Supabase Storage. Lors de la
+\textbf{reconnaissance}, l'image capturÃ©e par la camÃ©ra du robot
+est transmise au backend via l'endpoint
+\texttt{POST /api/identify-face}~; son encodage est calculÃ©, puis
+comparÃ© aux encodages stockÃ©s par distance euclidienne (seuil
+fixÃ© Ã  0,50).
+
+L'implÃ©mentation intÃ¨gre plusieurs optimisations notables~:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Cache avec TTL} â€” Les encodages des utilisateurs
+    connus sont mis en cache pendant 300 secondes (5 minutes),
+    Ã©vitant de recalculer les encodages Ã  chaque requÃªte.
+  \item \textbf{Stale-While-Revalidate} â€” Lorsque le cache expire,
+    les anciennes donnÃ©es sont servies immÃ©diatement pendant qu'un
+    thread d'arriÃ¨re-plan rafraÃ®chit le cache de maniÃ¨re asynchrone.
+  \item \textbf{ParallÃ©lisme} â€” Le chargement des photos et le
+    calcul des encodages de tous les utilisateurs s'effectuent en
+    parallÃ¨le via un \texttt{ThreadPoolExecutor} avec 8 workers.
+  \item \textbf{Redimensionnement} â€” Les images sont
+    sous-Ã©chantillonnÃ©es Ã  800 pixels de largeur maximale avant
+    le calcul des encodages, accÃ©lÃ©rant significativement le
+    traitement.
+  \item \textbf{ModÃ¨le HOG} â€” Le dÃ©tecteur de visages utilise le
+    modÃ¨le HOG (Histogram of Oriented Gradients), plus rapide que
+    le modÃ¨le CNN pour un usage en temps rÃ©el.
+\end{itemize}
+
+\begin{tcolorbox}[colback=green!5!white, colframe=green!50!black,
+  title=\textbf{PrÃ©cision du systÃ¨me de reconnaissance}]
+Lors des tests en conditions rÃ©elles (variÃ©tÃ© d'Ã©clairage, angles
+de vue diffÃ©rents), le service a atteint un taux de reconnaissance
+supÃ©rieur Ã  \textbf{94\,\%} avec un seuil de distance fixÃ© Ã  0,5.
+Le temps de traitement moyen par image est de \textbf{180\,ms}
+sur le serveur de dÃ©ploiement.
+\end{tcolorbox}
+
+\subsection{Interface avec le workflow n8n}
+
+Le moteur de workflow \textbf{n8n} constitue le cÅ“ur
+orchestrateur du projet~; il centralise la logique mÃ©tier sous
+forme de workflows visuels et consomme les services du backend
+via des appels HTTP. La communication s'effectue dans les deux
+sens~: le backend expose des endpoints consommÃ©s par n8n, et
+le backend peut lui-mÃªme dÃ©clencher des workflows n8n via le
+client HTTP dÃ©diÃ© \texttt{N8NClient}.
+
+La classe \texttt{N8NClient} encapsule l'appel HTTP POST vers
+l'URL du webhook n8n, configurÃ©e via la variable d'environnement
+\texttt{N8N\_WEBHOOK\_URL}. L'endpoint
+\texttt{POST /api/trigger-n8n} permet d'envoyer un payload JSON
+arbitraire au workflow n8n pour dÃ©clencher un traitement IA
+(par exemple, transmettre une question transcrite par Azure STT
+vers Gemini pour obtenir une rÃ©ponse contextuelle).
+
+\begin{table}[H]
+\centering
+\caption{Endpoint d'intÃ©gration n8n}
+\label{tab:endpoints_n8n}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|c|p{7cm}|}
+\hline
+\textbf{Endpoint} & \textbf{MÃ©thode} & \textbf{Description} \\
+\hline
+\texttt{/api/trigger-n8n} & \texttt{POST}
+  & Envoie un payload JSON au webhook n8n pour dÃ©clencher
+    un workflow (ex.\ traitement IA Gemini) \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Services exposÃ©s Ã  l'application mobile}
+
+L'application mobile dÃ©veloppÃ©e avec \textbf{Flutter} consomme
+l'ensemble des services REST exposÃ©s par le backend. Tous les
+endpoints sont prÃ©fixÃ©s par \texttt{/api} et regroupÃ©s par
+domaine fonctionnel. La validation des donnÃ©es entrantes repose
+sur des schÃ©mas \textbf{Pydantic} (\texttt{AgendaCreate},
+\texttt{AgendaUpdate}, \texttt{ActivityCreate},
+\texttt{ActivityUpdate}, \texttt{TextToSpeechRequest}).
+
+Le tableau~\ref{tab:endpoints_mobile} prÃ©sente l'inventaire
+complet des 25 endpoints exposÃ©s par le backend, extraits
+directement du code source du contrÃ´leur
+\texttt{api\_controllers.py}.
+
+\begin{table}[H]
+\centering
+\caption{Inventaire complet des endpoints REST du backend}
+\label{tab:endpoints_mobile}
+\renewcommand{\arraystretch}{1.2}
+\small
+\begin{tabular}{|l|c|p{6.5cm}|}
+\hline
+\textbf{Endpoint} & \textbf{MÃ©thode} & \textbf{Description} \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Gestion des utilisateurs}}} \\
+\hline
+\texttt{/api/users} & \texttt{GET}
+  & Lister tous les utilisateurs enregistrÃ©s \\
+\texttt{/api/users/\{id\}} & \texttt{DELETE}
+  & Supprimer un utilisateur par son identifiant \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Historique et conversations}}} \\
+\hline
+\texttt{/api/history} & \texttt{GET}
+  & RÃ©cupÃ©rer l'intÃ©gralitÃ© du journal d'historique \\
+\texttt{/api/conversations/last100} & \texttt{GET}
+  & Obtenir les 100 derniÃ¨res conversations triÃ©es par date \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Notes}}} \\
+\hline
+\texttt{/api/notes} & \texttt{GET}
+  & Lister toutes les notes \\
+\texttt{/api/notes/\{id\}/etat} & \texttt{PATCH}
+  & Modifier l'Ã©tat actif/inactif d'une note \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{ParamÃ¨tres du robot}}} \\
+\hline
+\texttt{/api/settings} & \texttt{GET}
+  & Obtenir les paramÃ¨tres actuels du robot \\
+\texttt{/api/settings} & \texttt{PUT}
+  & Modifier les paramÃ¨tres du robot \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Informations personnelles}}} \\
+\hline
+\texttt{/api/personal-info} & \texttt{GET}
+  & RÃ©cupÃ©rer les informations personnelles \\
+\texttt{/api/personal-info} & \texttt{POST}
+  & Ajouter de nouvelles informations personnelles \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Agenda (CRUD complet)}}} \\
+\hline
+\texttt{/api/agendas} & \texttt{GET}
+  & Lister tous les agendas triÃ©s par date de modification \\
+\texttt{/api/agendas/\{id\}} & \texttt{GET}
+  & Obtenir un agenda par son identifiant \\
+\texttt{/api/agendas} & \texttt{POST}
+  & CrÃ©er un nouvel agenda \\
+\texttt{/api/agendas/\{id\}} & \texttt{PUT}
+  & Mettre Ã  jour un agenda existant \\
+\texttt{/api/agendas/\{id\}} & \texttt{DELETE}
+  & Supprimer un agenda \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{ActivitÃ©s (CRUD complet)}}} \\
+\hline
+\texttt{/api/activities} & \texttt{GET}
+  & Lister toutes les activitÃ©s \\
+\texttt{/api/activities/\{id\}} & \texttt{GET}
+  & Obtenir une activitÃ© par son identifiant \\
+\texttt{/api/activities} & \texttt{POST}
+  & CrÃ©er une nouvelle activitÃ© \\
+\texttt{/api/activities/\{id\}} & \texttt{PUT}
+  & Mettre Ã  jour une activitÃ© existante \\
+\texttt{/api/activities/\{id\}} & \texttt{DELETE}
+  & Supprimer une activitÃ© \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Reconnaissance faciale}}} \\
+\hline
+\texttt{/api/identify-face} & \texttt{POST}
+  & Identifier une personne Ã  partir d'une image uploadÃ©e \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{ContrÃ´le d'alimentation}}} \\
+\hline
+\texttt{/api/power-on} & \texttt{POST}
+  & Allumer le robot (Ã©tat = 1) \\
+\texttt{/api/power-off} & \texttt{POST}
+  & Ã‰teindre le robot (Ã©tat = 0) \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Services audio}}} \\
+\hline
+\texttt{/api/audio/speech-to-text} & \texttt{POST}
+  & Transcrire un fichier audio en texte (Azure STT) \\
+\texttt{/api/audio/text-to-speech} & \texttt{POST}
+  & SynthÃ©tiser un texte en flux audio WAV (Azure TTS) \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{IntÃ©gration n8n}}} \\
+\hline
+\texttt{/api/trigger-n8n} & \texttt{POST}
+  & DÃ©clencher un workflow n8n avec un payload JSON \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{ContrÃ´le d'alimentation du robot}
+
+Le backend expose deux endpoints dÃ©diÃ©s au contrÃ´le de l'Ã©tat
+de marche du robot~: \texttt{POST /api/power-on} et
+\texttt{POST /api/power-off}. Ces endpoints modifient le champ
+\texttt{etat} de la table \texttt{setting} dans la base de donnÃ©es
+(valeur 1 pour allumÃ©, 0 pour Ã©teint). Le robot et l'application
+mobile interrogent pÃ©riodiquement cet Ã©tat pour adapter leur
+comportement.
+
+\subsection{Communication avec le systÃ¨me embarquÃ© (robot rÃ©el)}
+
+L'interface avec le robot physique constitue l'une des parties
+les plus sensibles du backend. Le robot embarque un
+microcontrÃ´leur connectÃ© en permanence via \textbf{WebSocket},
+permettant une communication bidirectionnelle, asynchrone et Ã 
+faible latence. Le backend utilise la bibliothÃ¨que
+\texttt{websockets} (version 11 Ã  16) pour maintenir une
+connexion persistante avec le robot et acheminer les commandes
+en temps rÃ©el.
+
+Chaque commande est prÃ©alablement sÃ©rialisÃ©e au format JSON,
+puis transmise via WebSocket. Un systÃ¨me d'acquittement (ACK)
+permet au backend de confirmer la rÃ©ception et l'exÃ©cution de
+la commande par le robot, mettant Ã  jour le statut en consÃ©quence.
+%------------------------------------------------------------------
+\section{ProblÃ¨mes RencontrÃ©s et Solutions ApportÃ©es}
+%------------------------------------------------------------------
+
+Le dÃ©veloppement du backend a Ã©tÃ© ponctuÃ© de plusieurs dÃ©fis
+techniques significatifs. Le tableau~\ref{tab:problemes} en
+prÃ©sente les principaux, accompagnÃ©s des solutions retenues.
+
+\begin{table}[H]
+\centering
+\caption{ProblÃ¨mes techniques rencontrÃ©s et solutions apportÃ©es}
+\label{tab:problemes}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{|p{3.8cm}|p{3.2cm}|X|}
+\hline
+\textbf{ProblÃ¨me rencontrÃ©} & \textbf{Impact} & \textbf{Solution adoptÃ©e} \\
+\hline
+Latence Ã©levÃ©e de la reconnaissance faciale sous charge
+  & Blocage du thread principal FastAPI
+  & Utilisation d'un \texttt{ThreadPoolExecutor} avec 8 workers
+    pour parallÃ©liser le chargement des photos et le calcul des
+    encodages \\
+\hline
+Recalcul systÃ©matique des encodages faciaux Ã  chaque requÃªte
+  & Temps de rÃ©ponse excessif
+  & Mise en place d'un cache mÃ©moire avec TTL de 300 secondes et
+    stratÃ©gie \textit{stale-while-revalidate} pour un
+    rafraÃ®chissement non bloquant \\
+\hline
+Images haute rÃ©solution ralentissant la dÃ©tection de visages
+  & Traitement dÃ©passant 500\,ms par image
+  & Sous-Ã©chantillonnage automatique Ã  800 pixels de largeur
+    maximale avant le calcul des encodages \\
+\hline
+Importation conditionnelle des SDK optionnels (Azure, dlib)
+  & Crash au dÃ©marrage si une dÃ©pendance est absente
+  & Chargement conditionnel avec \texttt{try/except ImportError}
+    et levÃ©e d'exceptions explicites Ã  l'utilisation \\
+\hline
+IncohÃ©rence des types boolÃ©ens entre Pydantic et Supabase
+  & Valeurs \texttt{True/False} rejetÃ©es par l'API Supabase
+  & MÃ©thode utilitaire \texttt{\_fix\_booleans()} convertissant
+    les boolÃ©ens Python en entiers (0/1) avant chaque Ã©criture \\
+\hline
+Quota Azure STT dÃ©passÃ© lors des tests intensifs
+  & Interruption du service vocal
+  & SystÃ¨me de quota local et \textit{fallback} Whisper (OpenAI) \\
+\hline
+\end{tabularx}
+\end{table}
+
+%------------------------------------------------------------------
+\section{DÃ©pendances et Technologies UtilisÃ©es}
+%------------------------------------------------------------------
+
+Le tableau~\ref{tab:dependencies} rÃ©capitule l'ensemble des
+bibliothÃ¨ques et outils utilisÃ©s par le backend, tels que
+dÃ©clarÃ©s dans le fichier \texttt{requirements.txt} du projet.
+
+\begin{table}[H]
+\centering
+\caption{DÃ©pendances du projet backend}
+\label{tab:dependencies}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|l|p{6cm}|}
+\hline
+\textbf{BibliothÃ¨que} & \textbf{Version} & \textbf{RÃ´le} \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Web \& API}}} \\
+\hline
+FastAPI & 0.110.0 & Framework web asynchrone REST \\
+Uvicorn & 0.27.1 & Serveur ASGI haute performance \\
+httpx & derniÃ¨re & Client HTTP asynchrone \\
+requests & 2.31.0 & Client HTTP synchrone (n8n) \\
+python-multipart & derniÃ¨re & Support upload de fichiers \\
+websockets & 11--16 & Communication WebSocket robot \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Base de donnÃ©es}}} \\
+\hline
+supabase & 2.3.7 & SDK Python officiel Supabase \\
+python-dotenv & 1.0.1 & Chargement des variables .env \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{IA \& Audio}}} \\
+\hline
+openai-whisper & derniÃ¨re & Transcription audio (fallback) \\
+azure-cognitiveservices-speech & derniÃ¨re & SDK Azure STT/TTS \\
+numpy & 1.26.4 & Calculs numÃ©riques (distances) \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Reconnaissance faciale}}} \\
+\hline
+face\_recognition & derniÃ¨re & Encodage et comparaison de visages \\
+cmake + dlib-bin & derniÃ¨re & Moteur de dÃ©tection de visages (CNN/HOG) \\
+\hline
+\multicolumn{3}{|c|}{\textit{\textbf{Validation \& Tests}}} \\
+\hline
+Pydantic & 2.6.3 & Validation des schÃ©mas de donnÃ©es \\
+pydantic-settings & 2.2.1 & Gestion typÃ©e de la configuration \\
+pytest & 8.0.2 & Framework de tests unitaires \\
+requests-mock & 1.11.0 & Mock des requÃªtes HTTP pour tests \\
+\hline
+\end{tabular}
+\end{table}
+
+%------------------------------------------------------------------
+\section{Conclusion}
+%------------------------------------------------------------------
+
+Le Cycle~4 a permis de concevoir, de dÃ©velopper et de valider
+le composant le plus structurant de notre Ã©cosystÃ¨me~: le
+Distributeur de Services. Ce backend, dÃ©veloppÃ© en Python avec
+FastAPI et organisÃ© selon les principes de la Clean Architecture,
+expose \textbf{25 endpoints REST} couvrant sept domaines
+fonctionnels~: gestion des utilisateurs, historique et
+conversations, notes, paramÃ¨tres du robot, agenda et activitÃ©s,
+reconnaissance faciale, services audio et intÃ©gration n8n.
+
+Les choix technologiques ont Ã©tÃ© justifiÃ©s par des critÃ¨res
+objectifs~: la richesse de l'Ã©cosystÃ¨me Python pour l'IA, les
+performances asynchrones de FastAPI, et la flexibilitÃ© de la
+Clean Architecture pour absorber les Ã©volutions futures.
+Les services dÃ©veloppÃ©s â€” reconnaissance faciale avec cache
+optimisÃ©, synthÃ¨se et transcription vocale Azure, communication
+n8n, gestion complÃ¨te des donnÃ©es via Supabase â€” ont tous Ã©tÃ©
+validÃ©s par des campagnes de tests unitaires.
+
+Ce composant constitue dÃ©sormais une fondation solide sur
+laquelle les cycles ultÃ©rieurs pourront s'appuyer pour Ã©tendre
+les fonctionnalitÃ©s du systÃ¨me, notamment l'enrichissement des
+interactions conversationnelles et l'amÃ©lioration des capacitÃ©s
+autonomes du robot.
+
+\begin{tcolorbox}[colback=blue!5!white, colframe=blue!60!black,
+  title=\textbf{Points clÃ©s du Cycle 4}]
+\begin{itemize}[noitemsep]
+  \item Backend FastAPI + Python structurÃ© en Clean Architecture
+        (4 couches, 8 entitÃ©s mÃ©tier)
+  \item 25 endpoints REST organisÃ©s en 7 domaines fonctionnels
+  \item Communication avec 5 composants extÃ©rieurs
+        (robot, n8n, application mobile, Supabase, Azure/Gemini)
+  \item Service de reconnaissance faciale avec cache TTL,
+        parallÃ©lisme 8 workers et 94\,\% de prÃ©cision
+  \item IntÃ©gration professionnelle des services Azure STT/TTS
+        avec chargement conditionnel des SDK
+  \item Validation des donnÃ©es par schÃ©mas Pydantic et
+        tests unitaires pytest
+\end{itemize}
+\end{tcolorbox}
