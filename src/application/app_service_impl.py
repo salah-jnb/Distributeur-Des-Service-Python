@@ -1,5 +1,6 @@
 import io
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -48,33 +49,122 @@ class ApiServiceImpl(IApiService):
     def get_all_users(self):
         return self.client.table("utilisateur").select("*").execute().data
 
-    def delete_user(self, user_id: int):
-        return self.client.table("utilisateur").delete().eq("id", user_id).execute().data
+    def get_user(self, iduser: int):
+        res = self.client.table("utilisateur").select("*").eq("iduser", iduser).execute().data
+        return res[0] if res else None
+
+    def create_user(self, data: dict):
+        return self.client.table("utilisateur").insert(data).execute().data
+
+    def update_user(self, iduser: int, data: dict):
+        return self.client.table("utilisateur").update(data).eq("iduser", iduser).execute().data
+
+    def delete_user(self, iduser: int):
+        return self.client.table("utilisateur").delete().eq("iduser", iduser).execute().data
+
+    # --- IMAGES UTILISATEUR (table imageuser) ---
+    def get_all_user_images(self):
+        return self.client.table("imageuser").select("*").execute().data
+
+    def get_user_image(self, idimage: int):
+        res = self.client.table("imageuser").select("*").eq("idimage", idimage).execute().data
+        return res[0] if res else None
+
+    def get_user_images_by_user(self, iduser: int):
+        return self.client.table("imageuser").select("*").eq("iduser", iduser).execute().data
+
+    def create_user_image(self, data: dict):
+        row = self.client.table("imageuser").insert(self._fix_booleans(data)).execute().data
+        self._invalidate_known_faces_cache()
+        return row
+
+    def update_user_image(self, idimage: int, data: dict):
+        row = self.client.table("imageuser").update(self._fix_booleans(data)).eq("idimage", idimage).execute().data
+        self._invalidate_known_faces_cache()
+        return row
+
+    def delete_user_image(self, idimage: int):
+        row = self.client.table("imageuser").delete().eq("idimage", idimage).execute().data
+        self._invalidate_known_faces_cache()
+        return row
 
     # --- HISTORIQUE ---
     def get_all_history(self):
-        return self.client.table("historique").select("*").execute().data
+        return self.client.table("historique").select("*").order("created_at", desc=True).execute().data
+
+    def get_historique(self, historique_id: int):
+        res = self.client.table("historique").select("*").eq("id", historique_id).execute().data
+        return res[0] if res else None
+
+    def create_historique(self, data: dict):
+        return self.client.table("historique").insert(self._fix_booleans(data)).execute().data
+
+    def delete_historique(self, historique_id: int):
+        return self.client.table("historique").delete().eq("id", historique_id).execute().data
 
     # --- CONVERSATIONS ---
     def get_last_100_conversations(self):
         return self.client.table("conversation").select("*").order("date", desc=True).limit(100).execute().data
 
+    def get_all_conversations(self):
+        return self.client.table("conversation").select("*").order("date", desc=True).execute().data
+
+    def get_conversation(self, conversation_id: int):
+        res = self.client.table("conversation").select("*").eq("id", conversation_id).execute().data
+        return res[0] if res else None
+
+    def create_conversation(self, data: dict):
+        return self.client.table("conversation").insert(self._fix_booleans(data)).execute().data
+
+    def update_conversation(self, conversation_id: int, data: dict):
+        return self.client.table("conversation").update(self._fix_booleans(data)).eq("id", conversation_id).execute().data
+
+    def delete_conversation(self, conversation_id: int):
+        return self.client.table("conversation").delete().eq("id", conversation_id).execute().data
+
     # --- NOTES ---
     def get_all_notes(self):
-        return self.client.table("note").select("*").execute().data
+        return self.client.table("note").select("*").order("id", desc=True).execute().data
+
+    def get_note(self, note_id: int):
+        res = self.client.table("note").select("*").eq("id", note_id).execute().data
+        return res[0] if res else None
+
+    def create_note(self, data: dict):
+        return self.client.table("note").insert(self._fix_booleans(data)).execute().data
+
+    def update_note(self, note_id: int, data: dict):
+        return self.client.table("note").update(self._fix_booleans(data)).eq("id", note_id).execute().data
+
+    def delete_note(self, note_id: int):
+        return self.client.table("note").delete().eq("id", note_id).execute().data
 
     def modify_note_etat(self, note_id: int, etat: bool):
         val = 1 if etat else 0
         return self.client.table("note").update({"etat": val}).eq("id", note_id).execute().data
 
     # --- SETTINGS ---
+    def _primary_setting_id(self) -> Optional[int]:
+        """Clé primaire de la ligne setting (colonne id)."""
+        res = self.client.table("setting").select("id").limit(1).execute().data
+        if not res:
+            return None
+        v = res[0].get("id")
+        try:
+            return int(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def get_settings(self):
         res = self.client.table("setting").select("*").limit(1).execute().data
         return res[0] if res else None
 
     def modify_settings(self, settings_data: dict):
         fixed_data = self._fix_booleans(settings_data)
-        return self.client.table("setting").update(fixed_data).eq("id", 1).execute().data
+        sid = self._primary_setting_id()
+        if sid is None:
+            return None
+        return self.client.table("setting").update(fixed_data).eq("id", sid).execute().data
 
     def _get_robot_langue_from_setting(self):
         """Locale BCP‑47 ou identifiant de langue (ex. ar-SA, fr-FR) stockée dans setting.langue."""
@@ -116,8 +206,83 @@ class ApiServiceImpl(IApiService):
     def get_personal_info(self):
         return self.client.table("information_personelle").select("*").execute().data
 
+    def get_personal_info_by_user(self, iduser: int):
+        return self.client.table("information_personelle").select("*").eq("iduser", iduser).execute().data
+
     def add_personal_info(self, info_data: dict):
-        return self.client.table("information_personelle").insert(info_data).execute().data
+        return self.client.table("information_personelle").insert(self._fix_booleans(info_data)).execute().data
+
+    def update_personal_info(self, info_id: int, data: dict):
+        return self.client.table("information_personelle").update(self._fix_booleans(data)).eq("id", info_id).execute().data
+
+    def delete_personal_info(self, info_id: int):
+        return self.client.table("information_personelle").delete().eq("id", info_id).execute().data
+
+    # --- ACCOMPAGNEMENT ---
+    def get_all_accompagnements(self):
+        return self.client.table("accompagnement").select("*").order("id", desc=True).execute().data
+
+    def get_accompagnement(self, accompagnement_id: int):
+        res = self.client.table("accompagnement").select("*").eq("id", accompagnement_id).execute().data
+        return res[0] if res else None
+
+    def get_accompagnements_by_user(self, iduser: int):
+        return self.client.table("accompagnement").select("*").eq("iduser", iduser).execute().data
+
+    def create_accompagnement(self, data: dict):
+        return self.client.table("accompagnement").insert(self._fix_booleans(data)).execute().data
+
+    def update_accompagnement(self, accompagnement_id: int, data: dict):
+        return self.client.table("accompagnement").update(self._fix_booleans(data)).eq("id", accompagnement_id).execute().data
+
+    def delete_accompagnement(self, accompagnement_id: int):
+        return self.client.table("accompagnement").delete().eq("id", accompagnement_id).execute().data
+
+    # --- AUTHENTIFICATION ---
+    def login(self, emailclient: str, motdepasse: str):
+        res = (
+            self.client.table("authentification")
+            .select("*")
+            .eq("emailclient", emailclient)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not res:
+            return None
+        row = res[0]
+        stored = str(row.get("motdepasse", ""))
+        if not secrets.compare_digest(stored, str(motdepasse)):
+            return None
+        return {
+            "idproduit": row.get("idproduit"),
+            "emailclient": row.get("emailclient"),
+            "idkoda": row.get("idkoda"),
+        }
+
+    def get_authentification(self, idproduit: int):
+        res = self.client.table("authentification").select("*").eq("idproduit", idproduit).execute().data
+        return res[0] if res else None
+
+    def list_authentifications(self):
+        return self.client.table("authentification").select("*").execute().data
+
+    def create_authentification(self, data: dict):
+        return self.client.table("authentification").insert(self._fix_booleans(data)).execute().data
+
+    def update_authentification(self, idproduit: int, data: dict):
+        return self.client.table("authentification").update(self._fix_booleans(data)).eq("idproduit", idproduit).execute().data
+
+    def delete_authentification(self, idproduit: int):
+        return self.client.table("authentification").delete().eq("idproduit", idproduit).execute().data
+
+    def _agenda_db_payload(self, data: dict) -> dict:
+        """Mappe date_modification (API) vers le nom de colonne réel en base (ex. date_modifiction)."""
+        d = self._fix_booleans(data.copy())
+        col = settings.SUPABASE_AGENDA_DATE_COLUMN
+        if col and col != "date_modification" and "date_modification" in d:
+            d[col] = d.pop("date_modification")
+        return d
 
     # --- INTEGRATION N8N ---
     def send_to_n8n(self, payload: dict):
@@ -127,17 +292,18 @@ class ApiServiceImpl(IApiService):
     # --- AGENDA ---
     # =========================================================
     def get_all_agendas(self):
-        return self.client.table("agenda").select("*").order("date_modification", desc=True).execute().data
+        sort_col = settings.SUPABASE_AGENDA_DATE_COLUMN or "date_modifiction"
+        return self.client.table("agenda").select("*").order(sort_col, desc=True).execute().data
 
     def get_agenda(self, agenda_id: int):
         res = self.client.table("agenda").select("*").eq("id", agenda_id).execute().data
         return res[0] if res else None
 
     def create_agenda(self, data: dict):
-        return self.client.table("agenda").insert(self._fix_booleans(data)).execute().data
+        return self.client.table("agenda").insert(self._agenda_db_payload(data)).execute().data
 
     def update_agenda(self, agenda_id: int, data: dict):
-        return self.client.table("agenda").update(self._fix_booleans(data)).eq("id", agenda_id).execute().data
+        return self.client.table("agenda").update(self._agenda_db_payload(data)).eq("id", agenda_id).execute().data
 
     def delete_agenda(self, agenda_id: int):
         return self.client.table("agenda").delete().eq("id", agenda_id).execute().data
@@ -154,15 +320,17 @@ class ApiServiceImpl(IApiService):
         return res[0] if res else None
 
     def create_activity(self, data: dict):
-        # On adapte les champs : 'Description' -> 'note'
+        note_text = data.get("note", data.get("description", ""))
         payload = {
-            "note": data.get("description", data.get("note", "")),
-            "etat": 1 if data.get("etat", False) else 0
+            "note": note_text,
+            "etat": 1 if data.get("etat", False) else 0,
         }
-        return self.client.table("note").insert(payload).execute().data
+        if data.get("date") is not None:
+            payload["date"] = data["date"]
+        return self.client.table("note").insert(self._fix_booleans(payload)).execute().data
 
     def update_activity(self, activity_id: int, data: dict):
-        payload = self._fix_booleans(data)
+        payload = self._fix_booleans(data.copy())
         if "description" in payload:
             payload["note"] = payload.pop("description")
         return self.client.table("note").update(payload).eq("id", activity_id).execute().data
@@ -212,11 +380,15 @@ class ApiServiceImpl(IApiService):
     # --- POWER ON / OFF ---
     # =========================================================
     def power_off(self):
-        self.client.table("setting").update({"etat": 0}).eq("id", 1).execute()
+        sid = self._primary_setting_id()
+        if sid is not None:
+            self.client.table("setting").update({"etat": 0}).eq("id", sid).execute()
         return {"status": "power_off", "etat": 0}
 
     def power_on(self):
-        self.client.table("setting").update({"etat": 1}).eq("id", 1).execute()
+        sid = self._primary_setting_id()
+        if sid is not None:
+            self.client.table("setting").update({"etat": 1}).eq("id", sid).execute()
         return {"status": "power_on", "etat": 1}
 
     # =========================================================
@@ -610,6 +782,11 @@ class ApiServiceImpl(IApiService):
         self._refresh_known_faces_cache()
         return self._known_faces_cache
 
+    def _invalidate_known_faces_cache(self):
+        with self._cache_lock:
+            self._known_faces_cache = []
+            self._known_faces_cache_at = 0.0
+
     def _refresh_known_faces_cache(self):
         with self._cache_lock:
             if self._is_refreshing_faces:
@@ -617,15 +794,48 @@ class ApiServiceImpl(IApiService):
             self._is_refreshing_faces = True
         try:
             now = time.time()
-            users = self.client.table("utilisateur").select("id, nom, image").execute().data
-            if not users:
+            if not FACE_RECOGNITION_AVAILABLE:
+                self._known_faces_cache = []
+                self._known_faces_cache_at = now
+                return
+            try:
+                rows = self.client.table("imageuser").select("idimage, iduser, url").execute().data or []
+            except Exception:
+                rows = []
+            if not rows:
                 self._known_faces_cache = []
                 self._known_faces_cache_at = now
                 return
 
+            users_rows = self.client.table("utilisateur").select("iduser, nom").execute().data or []
+            nom_by_user = {}
+            for u in users_rows:
+                uid = u.get("iduser")
+                if uid is None:
+                    continue
+                try:
+                    nom_by_user[int(uid)] = str(u.get("nom") or "inconnu")
+                except (TypeError, ValueError):
+                    nom_by_user[str(uid)] = str(u.get("nom") or "inconnu")
+
             known_faces = []
             with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = [executor.submit(self._extract_user_encoding, user) for user in users]
+                futures = []
+                for row in rows:
+                    url = (row.get("url") or "").strip()
+                    if not url:
+                        continue
+                    uid = row.get("iduser")
+                    try:
+                        uid_int = int(uid) if uid is not None else None
+                    except (TypeError, ValueError):
+                        uid_int = None
+                    nom = "inconnu"
+                    if uid_int is not None and uid_int in nom_by_user:
+                        nom = nom_by_user[uid_int]
+                    elif uid is not None and str(uid) in nom_by_user:
+                        nom = nom_by_user[str(uid)]
+                    futures.append(executor.submit(self._extract_encoding_from_url, url, nom))
                 for future in as_completed(futures):
                     result = future.result()
                     if result is not None:
@@ -637,8 +847,7 @@ class ApiServiceImpl(IApiService):
             with self._cache_lock:
                 self._is_refreshing_faces = False
 
-    def _extract_user_encoding(self, user: dict):
-        image_url = user.get("image")
+    def _extract_encoding_from_url(self, image_url: str, nom: str):
         if not image_url:
             return None
         try:
@@ -656,7 +865,7 @@ class ApiServiceImpl(IApiService):
             if not user_encodings:
                 return None
             return {
-                "nom": user.get("nom", "inconnu"),
+                "nom": nom or "inconnu",
                 "encoding": user_encodings[0]
             }
         except Exception:

@@ -2,11 +2,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+
 @dataclass
 class Activity:
+    """
+    Alias métier pour une entrée de la table `note` (note, etat, date).
+    Conservé pour compatibilité avec les routes /activities existantes.
+    """
+
     id: int
-    titre: str
-    description: str
+    note: str
     etat: bool
-    date: str
-    created_at: Optional[datetime] = None
+    date: Optional[datetime] = None

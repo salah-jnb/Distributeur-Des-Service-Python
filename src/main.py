@@ -3,9 +3,19 @@ import sys
 
 import uvicorn
 from fastapi import FastAPI
+from starlette.requests import Request
 from src.controllers.api_controllers import router
 
 app = FastAPI(title="Système Distributeur PFE")
+
+
+@app.middleware("http")
+async def log_each_request(request: Request, call_next):
+    """Trace chaque requête entrante (utile pour vérifier que le mobile atteint bien le PC)."""
+    client_host = request.client.host if request.client else "?"
+    print(f"[HTTP] {request.method} {request.url.path} client={client_host}", flush=True)
+    return await call_next(request)
+
 
 # Inclure toutes les routes définies dans le contrôleur
 app.include_router(router, prefix="/api")

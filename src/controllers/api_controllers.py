@@ -2,12 +2,28 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from src.application.app_service_impl import ApiServiceImpl
 from src.controllers.schemas import (
+    AccompagnementCreate,
+    AccompagnementUpdate,
     AgendaCreate,
     AgendaUpdate,
     ActivityCreate,
     ActivityUpdate,
+    AuthentificationCreate,
+    AuthentificationUpdate,
+    ConversationCreate,
+    ConversationUpdate,
+    HistoriqueCreate,
+    InformationPersonelleCreate,
+    InformationPersonelleUpdate,
+    ImageUserCreate,
+    ImageUserUpdate,
+    LoginRequest,
+    NoteCreate,
+    NoteUpdate,
     SettingUpdate,
     TextToSpeechRequest,
+    UtilisateurCreate,
+    UtilisateurUpdate,
 )
 
 router = APIRouter()
@@ -20,9 +36,69 @@ service = ApiServiceImpl()
 def get_users():
     return service.get_all_users()
 
-@router.delete("/users/{user_id}", summary="Supprimer un utilisateur")
-def delete_user(user_id: int):
-    return service.delete_user(user_id)
+
+@router.get("/users/{iduser}", summary="Obtenir un utilisateur par iduser")
+def get_user(iduser: int):
+    row = service.get_user(iduser)
+    if not row:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    return row
+
+
+@router.post("/users", summary="Créer un utilisateur", status_code=201)
+def create_user(data: UtilisateurCreate):
+    return service.create_user(data.model_dump(exclude_none=True))
+
+
+@router.put("/users/{iduser}", summary="Mettre à jour un utilisateur")
+def update_user(iduser: int, data: UtilisateurUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucun champ à mettre à jour")
+    return service.update_user(iduser, payload)
+
+
+@router.delete("/users/{iduser}", summary="Supprimer un utilisateur")
+def delete_user(iduser: int):
+    return service.delete_user(iduser)
+
+# ==============================================================
+# ENDPOINTS IMAGES UTILISATEUR (table imageuser)
+# ==============================================================
+@router.get("/user-images", summary="Lister les images utilisateur")
+def list_user_images():
+    return service.get_all_user_images()
+
+
+@router.get("/user-images/{idimage}", summary="Obtenir une ligne imageuser")
+def get_user_image_row(idimage: int):
+    row = service.get_user_image(idimage)
+    if not row:
+        raise HTTPException(status_code=404, detail="Image utilisateur introuvable")
+    return row
+
+
+@router.get("/user-images/by-user/{iduser}", summary="Images pour un iduser")
+def get_user_images_for_user(iduser: int):
+    return service.get_user_images_by_user(iduser)
+
+
+@router.post("/user-images", summary="Enregistrer une image utilisateur (url)", status_code=201)
+def create_user_image(data: ImageUserCreate):
+    return service.create_user_image(data.model_dump(exclude_none=True))
+
+
+@router.put("/user-images/{idimage}", summary="Mettre à jour une image utilisateur")
+def update_user_image_row(idimage: int, data: ImageUserUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucun champ à mettre à jour")
+    return service.update_user_image(idimage, payload)
+
+
+@router.delete("/user-images/{idimage}", summary="Supprimer une image utilisateur")
+def delete_user_image_row(idimage: int):
+    return service.delete_user_image(idimage)
 
 # ==============================================================
 # ENDPOINTS HISTORIQUE
@@ -31,12 +107,61 @@ def delete_user(user_id: int):
 def get_history():
     return service.get_all_history()
 
+
+@router.get("/history/{historique_id}", summary="Obtenir une entrée d'historique")
+def get_historique(historique_id: int):
+    row = service.get_historique(historique_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Historique introuvable")
+    return row
+
+
+@router.post("/history", summary="Ajouter une entrée d'historique", status_code=201)
+def create_historique(data: HistoriqueCreate):
+    return service.create_historique(data.model_dump(exclude_none=True))
+
+
+@router.delete("/history/{historique_id}", summary="Supprimer une entrée d'historique")
+def delete_historique(historique_id: int):
+    return service.delete_historique(historique_id)
+
 # ==============================================================
 # ENDPOINTS CONVERSATIONS
 # ==============================================================
 @router.get("/conversations/last100", summary="100 dernières conversations")
 def get_convs():
     return service.get_last_100_conversations()
+
+
+@router.get("/conversations", summary="Lister toutes les conversations")
+def list_conversations():
+    return service.get_all_conversations()
+
+
+@router.get("/conversations/{conversation_id}", summary="Obtenir une conversation")
+def get_conversation(conversation_id: int):
+    row = service.get_conversation(conversation_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    return row
+
+
+@router.post("/conversations", summary="Créer une conversation", status_code=201)
+def create_conversation(data: ConversationCreate):
+    return service.create_conversation(data.model_dump(exclude_none=True))
+
+
+@router.put("/conversations/{conversation_id}", summary="Mettre à jour une conversation")
+def update_conversation(conversation_id: int, data: ConversationUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucune donnée fournie")
+    return service.update_conversation(conversation_id, payload)
+
+
+@router.delete("/conversations/{conversation_id}", summary="Supprimer une conversation")
+def delete_conversation(conversation_id: int):
+    return service.delete_conversation(conversation_id)
 
 # ==============================================================
 # ENDPOINTS NOTES
@@ -45,8 +170,35 @@ def get_convs():
 def get_notes():
     return service.get_all_notes()
 
+
+@router.get("/notes/{note_id}", summary="Obtenir une note")
+def get_note(note_id: int):
+    row = service.get_note(note_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Note introuvable")
+    return row
+
+
+@router.post("/notes", summary="Créer une note", status_code=201)
+def create_note(data: NoteCreate):
+    return service.create_note(data.model_dump(exclude_none=True))
+
+
+@router.put("/notes/{note_id}", summary="Mettre à jour une note")
+def update_note_full(note_id: int, data: NoteUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucune donnée fournie")
+    return service.update_note(note_id, payload)
+
+
+@router.delete("/notes/{note_id}", summary="Supprimer une note")
+def delete_note(note_id: int):
+    return service.delete_note(note_id)
+
+
 @router.patch("/notes/{note_id}/etat", summary="Modifier l'état d'une note")
-def update_note(note_id: int, etat: bool):
+def update_note_etat(note_id: int, etat: bool):
     return service.modify_note_etat(note_id, etat)
 
 # ==============================================================
@@ -70,9 +222,110 @@ def update_settings(data: SettingUpdate):
 def get_all_info():
     return service.get_personal_info()
 
-@router.post("/personal-info", summary="Ajouter des informations personnelles")
-def save_info(data: dict):
-    return service.add_personal_info(data)
+
+@router.get("/personal-info/user/{iduser}", summary="Infos personnelles pour un utilisateur")
+def get_personal_info_by_user(iduser: int):
+    return service.get_personal_info_by_user(iduser)
+
+
+@router.post("/personal-info", summary="Ajouter des informations personnelles", status_code=201)
+def save_info(data: InformationPersonelleCreate):
+    return service.add_personal_info(data.model_dump(exclude_none=True))
+
+
+@router.put("/personal-info/{info_id}", summary="Mettre à jour une information personnelle")
+def update_personal_info(info_id: int, data: InformationPersonelleUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucune donnée fournie")
+    return service.update_personal_info(info_id, payload)
+
+
+@router.delete("/personal-info/{info_id}", summary="Supprimer une information personnelle")
+def delete_personal_info(info_id: int):
+    return service.delete_personal_info(info_id)
+
+
+# ==============================================================
+# ENDPOINTS ACCOMPAGNEMENT
+# ==============================================================
+@router.get("/accompagnements", summary="Lister tous les accompagnements")
+def list_accompagnements():
+    return service.get_all_accompagnements()
+
+
+@router.get("/accompagnements/user/{iduser}", summary="Accompagnements par utilisateur")
+def list_accompagnements_by_user(iduser: int):
+    return service.get_accompagnements_by_user(iduser)
+
+
+@router.get("/accompagnements/{accompagnement_id}", summary="Obtenir un accompagnement")
+def get_accompagnement(accompagnement_id: int):
+    row = service.get_accompagnement(accompagnement_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Accompagnement introuvable")
+    return row
+
+
+@router.post("/accompagnements", summary="Créer un accompagnement", status_code=201)
+def create_accompagnement(data: AccompagnementCreate):
+    return service.create_accompagnement(data.model_dump(exclude_none=True))
+
+
+@router.put("/accompagnements/{accompagnement_id}", summary="Mettre à jour un accompagnement")
+def update_accompagnement(accompagnement_id: int, data: AccompagnementUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucune donnée fournie")
+    return service.update_accompagnement(accompagnement_id, payload)
+
+
+@router.delete("/accompagnements/{accompagnement_id}", summary="Supprimer un accompagnement")
+def delete_accompagnement(accompagnement_id: int):
+    return service.delete_accompagnement(accompagnement_id)
+
+
+# ==============================================================
+# ENDPOINTS AUTHENTIFICATION
+# ==============================================================
+@router.post("/auth/login", summary="Connexion client (email + mot de passe)")
+def auth_login(data: LoginRequest):
+    result = service.login(data.emailclient.strip(), data.motdepasse)
+    if not result:
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+    return {"status": "ok", "data": result}
+
+
+@router.get("/auth/registrations", summary="Lister les enregistrements authentification")
+def list_auth():
+    return service.list_authentifications()
+
+
+@router.get("/auth/registrations/{idproduit}", summary="Obtenir une ligne authentification par idproduit")
+def get_auth(idproduit: int):
+    row = service.get_authentification(idproduit)
+    if not row:
+        raise HTTPException(status_code=404, detail="Authentification introuvable")
+    return row
+
+
+@router.post("/auth/registrations", summary="Créer une authentification", status_code=201)
+def create_auth(data: AuthentificationCreate):
+    return service.create_authentification(data.model_dump(exclude_none=True))
+
+
+@router.put("/auth/registrations/{idproduit}", summary="Mettre à jour une authentification")
+def update_auth(idproduit: int, data: AuthentificationUpdate):
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Aucune donnée fournie")
+    return service.update_authentification(idproduit, payload)
+
+
+@router.delete("/auth/registrations/{idproduit}", summary="Supprimer une authentification")
+def delete_auth(idproduit: int):
+    return service.delete_authentification(idproduit)
+
 
 # ==============================================================
 # ENDPOINT N8N
@@ -146,9 +399,8 @@ def delete_activity(activity_id: int):
 @router.post("/identify-face", summary="Identifier une personne par reconnaissance faciale")
 async def identify_face(file: UploadFile = File(...)):
     """
-    Reçoit une image (photo), la compare aux photos de tous les utilisateurs
-    stockées dans Supabase Storage, et retourne le nom de la personne identifiée
-    ou 'inconnu' si elle n'est pas reconnue.
+    Compare la photo aux enregistrements de la table <b>imageuser</b> (URL),
+    résout le <b>nom</b> via <b>utilisateur.iduser</b>, ou retourne <code>inconnu</code>.
     """
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Le fichier doit être une image")
