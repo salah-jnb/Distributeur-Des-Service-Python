@@ -17,6 +17,7 @@ from src.presentation.services_interfaces import IApiService
 from src.infrastructure.database import get_supabase_client
 from src.infrastructure.n8n_client import N8NClient
 from src.infrastructure.safe_console import safe_console_line
+from src.infrastructure.free_translate_client import FreeTranslateClient
 from src.infrastructure.gemini_client import GeminiClient
 from src.config.config import resolve_tts_voice_for_bcp47_locale, settings
 
@@ -39,6 +40,7 @@ class ApiServiceImpl(IApiService):
         self.client = get_supabase_client()
         self.n8n = N8NClient()
         self.gemini = GeminiClient()
+        self.translator = FreeTranslateClient()
         self._known_faces_cache = []
         self._known_faces_cache_at = 0.0
         self._known_faces_ttl_seconds = 300
@@ -286,7 +288,16 @@ class ApiServiceImpl(IApiService):
 
     # --- INTEGRATION N8N ---
     def send_to_n8n(self, payload: dict):
-        return self.n8n.trigger_workflow(payload)
+        """Envoie au webhook n8n un corps avec le champ attendu par le workflow : ``message``."""
+        if not isinstance(payload, dict):
+            raise TypeError("send_to_n8n attend un dict.")
+        if "message" in payload:
+            body = {"message": payload["message"]}
+        elif "text" in payload:
+            body = {"message": payload["text"]}
+        else:
+            body = payload
+        return self.n8n.trigger_workflow(body)
 
     # =========================================================
     # --- AGENDA ---
@@ -643,23 +654,17 @@ class ApiServiceImpl(IApiService):
             safe_console_line(f"Texte client a ajouter entre parentheses : {str(extra_text).strip()}")
             safe_console_line(f"Question composee (voix + texte) : {question_for_n8n}")
 
-        if robot_tr != "fr" and not self.gemini.configured():
-            raise RuntimeError(
-                "GEMINI_API_KEY est requis pour traduire la langue du robot vers le français avant n8n "
-                "(traduction via Google Gemini, sans Azure Translator)."
-            )
-
         if robot_tr == "fr":
             text_fr_for_n8n = question_for_n8n
             safe_console_line(f"Traduire en francais : (deja francais, inchangé) {text_fr_for_n8n}")
         else:
-            text_fr_for_n8n = self.gemini.translate_text(
+            text_fr_for_n8n = self.translator.translate_text(
                 question_for_n8n, robot_lang_setting, "fr-FR"
             )
             safe_console_line(f"Traduire en francais : {text_fr_for_n8n}")
 
-        safe_console_line("Envoi n8n (payload JSON avec le texte en francais).")
-        n8n_response = self.send_to_n8n({"text": text_fr_for_n8n})
+        safe_console_line("Envoi n8n (payload JSON « message » en français).")
+        n8n_response = self.send_to_n8n({"message": text_fr_for_n8n})
 
         reply_fr = self._extract_text_from_n8n_response(n8n_response)
         safe_console_line(f"Resultat brut n8n (objet ou texte brut) : {n8n_response!s}")
@@ -674,7 +679,7 @@ class ApiServiceImpl(IApiService):
                 f"Traduction vers langue robot ({robot_lang_setting}) : (inchangé) {reply_robot_lang}"
             )
         else:
-            reply_robot_lang = self.gemini.translate_text(reply_fr, "fr-FR", robot_lang_setting)
+            reply_robot_lang = self.translator.translate_text(reply_fr, "fr-FR", robot_lang_setting)
             safe_console_line(
                 f"Traduction vers langue robot ({robot_lang_setting}) : {reply_robot_lang}"
             )

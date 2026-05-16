@@ -15,6 +15,9 @@ openai-whisper
 azure-cognitiveservices-speech
 numpy==1.26.4
 
+# Traduction sans clé API (pipeline vocal → n8n)
+deep-translator>=1.11.4
+
 # Validation & Tests
 pydantic>=2.6.3,<3
 pydantic-settings==2.2.1

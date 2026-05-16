@@ -332,7 +332,7 @@ def delete_auth(idproduit: int):
 # ==============================================================
 @router.post("/trigger-n8n", summary="Déclencher un workflow n8n")
 def trigger_n8n_workflow(payload: dict):
-    """Envoie n'importe quelle donnée à n8n (ex: une question pour traitement IA)"""
+    """Envoie à n8n un JSON avec ``message`` (requis par le webhook). ``text`` est encore accepté et mappé vers ``message``."""
     return service.send_to_n8n(payload)
 
 # ==============================================================

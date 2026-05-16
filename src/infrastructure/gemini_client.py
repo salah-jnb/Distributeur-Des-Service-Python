@@ -1,4 +1,3 @@
-import re
 import requests
 import time
 
@@ -70,27 +69,3 @@ class GeminiClient:
             "Output: JSON array."
         )
         return self._generate_content_text(prompt)
-
-    def translate_text(self, text: str, source_bcp47: str, target_bcp47: str) -> str:
-        stripped = (text or "").strip()
-        if not stripped:
-            return text or ""
-        s = source_bcp47.strip().split("-")[0].lower()
-        t = target_bcp47.strip().split("-")[0].lower()
-        if s == t:
-            return text
-
-        prompt = (
-            "You are a professional translator.\n"
-            f"Translate the following text written in locale {source_bcp47} into locale {target_bcp47}. "
-            "Preserve proper names when reasonable, keep numbers unchanged. "
-            "Output ONLY the translated plain text — no quotation marks around the answer, "
-            "no markdown, no explanation.\n\n"
-            f"{stripped}"
-        )
-        raw = self._generate_content_text(prompt).strip()
-        cleaned = raw.replace("```plaintext", "```").replace("```text", "```")
-        if "```" in cleaned:
-            cleaned = re.sub(r"^```\w*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```$", "", cleaned)
-        return cleaned.strip()
