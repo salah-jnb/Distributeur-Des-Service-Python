@@ -30,6 +30,13 @@ def _build_tts_voice_map() -> dict:
     return defaults
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.getenv(key)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
     SUPABASE_URL = os.getenv("SUPABASE_URL")
     SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -37,6 +44,11 @@ class Settings:
     AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
     AZURE_SPEECH_VOICE = os.getenv("AZURE_SPEECH_VOICE", "ar-SA-HamedNeural")
     AZURE_SPEECH_RECOGNITION_LANGUAGE = os.getenv("AZURE_SPEECH_RECOGNITION_LANGUAGE", "ar-SA")
+    # TTS « robot compagnon » (SSML prosody — style proche EMO / petit robot)
+    AZURE_TTS_ROBOT_EFFECT = _env_bool("AZURE_TTS_ROBOT_EFFECT", True)
+    AZURE_TTS_ROBOT_PITCH = os.getenv("AZURE_TTS_ROBOT_PITCH", "+28%")
+    AZURE_TTS_ROBOT_RATE = os.getenv("AZURE_TTS_ROBOT_RATE", "1.12")
+    AZURE_TTS_ROBOT_VOLUME = os.getenv("AZURE_TTS_ROBOT_VOLUME", "").strip() or None
 
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")

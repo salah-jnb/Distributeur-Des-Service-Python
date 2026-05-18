@@ -20,6 +20,7 @@ from src.infrastructure.safe_console import safe_console_line
 from src.infrastructure.free_translate_client import FreeTranslateClient
 from src.infrastructure.gemini_client import GeminiClient
 from src.config.config import resolve_tts_voice_for_bcp47_locale, settings
+from src.infrastructure.tts_robot_ssml import build_robot_ssml, locale_from_voice_name
 
 try:
     import azure.cognitiveservices.speech as speechsdk
@@ -589,14 +590,32 @@ class ApiServiceImpl(IApiService):
             raise RuntimeError("La bibliothèque azure-cognitiveservices-speech n'est pas installée.")
         self._validate_azure_speech_config()
 
+        chosen_voice = voice_name or settings.AZURE_SPEECH_VOICE
         speech_config = speechsdk.SpeechConfig(
             subscription=settings.AZURE_SPEECH_KEY,
             region=settings.AZURE_SPEECH_REGION
         )
-        speech_config.speech_synthesis_voice_name = voice_name or settings.AZURE_SPEECH_VOICE
+        speech_config.speech_synthesis_voice_name = chosen_voice
 
         synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-        result = synthesizer.speak_text_async(text).get()
+        if settings.AZURE_TTS_ROBOT_EFFECT:
+            ssml = build_robot_ssml(
+                text,
+                chosen_voice,
+                xml_lang=locale_from_voice_name(
+                    chosen_voice, settings.AZURE_SPEECH_RECOGNITION_LANGUAGE
+                ),
+                pitch=settings.AZURE_TTS_ROBOT_PITCH,
+                rate=settings.AZURE_TTS_ROBOT_RATE,
+                volume=settings.AZURE_TTS_ROBOT_VOLUME,
+            )
+            safe_console_line(
+                f"TTS mode robot (SSML) voix={chosen_voice} "
+                f"pitch={settings.AZURE_TTS_ROBOT_PITCH} rate={settings.AZURE_TTS_ROBOT_RATE}"
+            )
+            result = synthesizer.speak_ssml_async(ssml).get()
+        else:
+            result = synthesizer.speak_text_async(text).get()
 
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             return bytes(result.audio_data)
