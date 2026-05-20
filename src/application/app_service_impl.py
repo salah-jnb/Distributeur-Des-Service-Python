@@ -726,6 +726,190 @@ class ApiServiceImpl(IApiService):
         }
 
     # =========================================================
+    # --- ACTION DISPATCHER (multi-type n8n responses) ---
+    # =========================================================
+    # Direction words used by the n8n "Test" code node. Keep this in sync
+    # with the workflow's `directions` array — otherwise the dispatcher will
+    # silently fall back to "text" for movements.
+    _DIRECTION_WORD_TO_COMMAND = {
+        "avant": "forward",
+        "derriere": "backward",
+        "derrière": "backward",
+        "gauche": "left",
+        "droite": "right",
+        "stop": "stop",
+        "stope": "stop",
+    }
+
+    def _interpret_n8n_envelope(self, envelope: dict) -> dict:
+        """
+        Map the raw n8n response (from N8NClient.trigger_workflow_raw) to a structured
+        action. Returns a dict with at least:
+          {
+            "action": "text" | "music" | "motion" | "sleep" | "error",
+            "spoken_text": str,        # what to TTS for the user (announce / acknowledge / reply)
+            "music_url": str | None,   # YouTube URL when action=music
+            "music_title": str | None,
+            "motion_command": str | None,  # forward/backward/left/right/stop
+            "raw_text": str,           # original textual content for debugging
+          }
+        """
+        result = {
+            "action": "text",
+            "spoken_text": "",
+            "music_url": None,
+            "music_title": None,
+            "motion_command": None,
+            "raw_text": "",
+        }
+        if not envelope or not envelope.get("ok"):
+            result["action"] = "error"
+            result["spoken_text"] = envelope.get("error") if envelope else "n8n unreachable"
+            return result
+
+        json_body = envelope.get("json")
+        text_body = (envelope.get("text") or "").strip()
+        result["raw_text"] = text_body
+
+        # ----- 1) Music branch: JSON with lienChanson + nomChanson ------------------
+        if isinstance(json_body, dict) and json_body.get("lienChanson"):
+            title = (json_body.get("nomChanson") or "").strip()
+            result["action"] = "music"
+            result["music_url"] = str(json_body.get("lienChanson")).strip()
+            result["music_title"] = title or None
+            # Announcement TTS — backend says it in robot's locale upstream.
+            result["spoken_text"] = (
+                f"Je vais te jouer {title}" if title else "Je joue ta musique tout de suite"
+            )
+            return result
+
+        # n8n also wraps JSON arrays sometimes ([{...}]) — handle that.
+        if isinstance(json_body, list) and json_body:
+            first = json_body[0]
+            if isinstance(first, dict) and first.get("lienChanson"):
+                title = (first.get("nomChanson") or "").strip()
+                result["action"] = "music"
+                result["music_url"] = str(first.get("lienChanson")).strip()
+                result["music_title"] = title or None
+                result["spoken_text"] = (
+                    f"Je vais te jouer {title}" if title else "Je joue ta musique tout de suite"
+                )
+                return result
+
+        # ----- 2) Sleep / shutdown branch: plain text "I am Closed " ---------------
+        if "i am closed" in text_body.lower():
+            result["action"] = "sleep"
+            result["spoken_text"] = "Bonne nuit, à bientôt"
+            return result
+
+        # ----- 3) Sleep-mode reply (etat=0): "Je suis Fermeé pour le moment…" -----
+        if "ferme" in text_body.lower() and "moment" in text_body.lower():
+            result["action"] = "sleep"
+            result["spoken_text"] = text_body  # the robot reads its own canned message
+            return result
+
+        # ----- 4) Wake / unlock branch: plain text "Yo Yo" -------------------------
+        if text_body.strip().lower() in {"yo yo", "yo"}:
+            result["action"] = "text"
+            result["spoken_text"] = "Me revoilà ! Je t'écoute"
+            return result
+
+        # ----- 5) Direction branch: "direction\n<message>" -------------------------
+        # The workflow's `Respond Direction` node emits: f"{intention}\n{messageOriginal}".
+        lines = [ln.strip() for ln in text_body.splitlines() if ln.strip()]
+        if lines and lines[0].lower() == "direction":
+            haystack = " ".join(lines[1:]).lower() if len(lines) > 1 else ""
+            for word, command in self._DIRECTION_WORD_TO_COMMAND.items():
+                if word in haystack:
+                    result["action"] = "motion"
+                    result["motion_command"] = command
+                    result["spoken_text"] = self._motion_announcement(command)
+                    return result
+            # Direction word missing from payload — degrade to plain text.
+
+        # ----- 6) Text branch: JSON `{ "output": "..." }` or just a string ---------
+        text_reply = self._extract_text_from_n8n_response(json_body if json_body is not None else text_body)
+        result["action"] = "text"
+        result["spoken_text"] = text_reply or text_body or ""
+        return result
+
+    @staticmethod
+    def _motion_announcement(command: str) -> str:
+        return {
+            "forward": "OK, j'avance",
+            "backward": "OK, je recule",
+            "left": "OK, je tourne à gauche",
+            "right": "OK, je tourne à droite",
+            "stop": "Je m'arrête",
+        }.get(command, "OK")
+
+    def audio_to_n8n_to_action(self, audio_bytes: bytes, voice_name=None, extra_text=None):
+        """
+        Like audio_to_n8n_to_audio but supports multi-type responses.
+
+        Returns:
+            {
+              "action": "text" | "music" | "motion" | "sleep" | "error",
+              "robot_lang": str,
+              "input_text": str,
+              "spoken_text": str,         # localized for the robot, already TTS'd
+              "audio_bytes": bytes,       # WAV bytes for `spoken_text`
+              "music_url": str | None,
+              "music_title": str | None,
+              "motion_command": str | None,
+            }
+        """
+        safe_console_line("========== Pipeline audio -> n8n -> action ==========")
+        langue_brute = self._get_robot_langue_from_setting()
+        robot_lang_setting = self._canonical_locale_for_speech_and_translation(langue_brute)
+        robot_tr = self._bcp47_primary(robot_lang_setting)
+
+        stt_result = self.speech_to_text(audio_bytes)
+        input_text = (stt_result or {}).get("text", "").strip()
+        if not input_text:
+            raise RuntimeError("Aucun texte reconnu depuis l'audio.")
+
+        question_for_n8n = self._compose_stt_with_extra_text(input_text, extra_text)
+        if robot_tr == "fr":
+            text_fr_for_n8n = question_for_n8n
+        else:
+            text_fr_for_n8n = self.translator.translate_text(
+                question_for_n8n, robot_lang_setting, "fr-FR"
+            )
+
+        safe_console_line(f"Envoi n8n (raw): {text_fr_for_n8n!r}")
+        envelope = self.n8n.trigger_workflow_raw({"message": text_fr_for_n8n})
+        action = self._interpret_n8n_envelope(envelope)
+        safe_console_line(f"Action interprétée : {action['action']} | command={action['motion_command']} | url={action['music_url']}")
+
+        # Translate spoken_text to robot language if needed (announcements are French).
+        spoken_fr = action.get("spoken_text") or ""
+        if not spoken_fr:
+            spoken_robot = ""
+        elif robot_tr == "fr":
+            spoken_robot = spoken_fr
+        else:
+            try:
+                spoken_robot = self.translator.translate_text(spoken_fr, "fr-FR", robot_lang_setting)
+            except Exception:
+                # Translation hiccups should not block the action — fall back to French.
+                spoken_robot = spoken_fr
+
+        chosen_voice = self._tts_voice_for_robot_locale(robot_lang_setting, voice_name)
+        audio_out = self.text_to_speech(spoken_robot, chosen_voice) if spoken_robot else b""
+
+        return {
+            "action": action["action"],
+            "robot_lang": robot_lang_setting,
+            "input_text": input_text,
+            "spoken_text": spoken_robot,
+            "audio_bytes": audio_out,
+            "music_url": action["music_url"],
+            "music_title": action["music_title"],
+            "motion_command": action["motion_command"],
+        }
+
+    # =========================================================
     # --- GEMINI KEYWORDS ---
     # =========================================================
     def generate_robot_name_keywords(self):
@@ -765,7 +949,11 @@ class ApiServiceImpl(IApiService):
             return payload.strip()
 
         if isinstance(payload, dict):
-            direct_keys = ["text", "response", "answer", "message", "output", "result"]
+            # "reponce" / "réponse" : schéma propre au workflow KODA n8n (typo conservée).
+            direct_keys = [
+                "reponce", "réponse", "reply",
+                "text", "response", "answer", "message", "output", "result",
+            ]
             for key in direct_keys:
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():

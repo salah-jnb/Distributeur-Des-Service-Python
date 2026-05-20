@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 
 # Force le chargement du fichier .env
-load_dotenv()
+load_dotenv(override=True)
 
 
 def _build_tts_voice_map() -> dict:

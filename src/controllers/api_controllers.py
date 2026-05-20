@@ -1,3 +1,5 @@
+import base64
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from src.application.app_service_impl import ApiServiceImpl
@@ -501,6 +503,50 @@ async def speech_to_n8n_to_speech(
             detail = f"Erreur pipeline audio n8n: {e!s}"
         except Exception:
             detail = "Erreur pipeline audio n8n."
+        raise HTTPException(status_code=500, detail=detail)
+
+
+@router.post(
+    "/audio/speech-to-action",
+    summary="Audio -> texte -> n8n -> action (text/music/motion/sleep) avec WAV embarqué",
+)
+async def speech_to_action(
+    file: UploadFile = File(...),
+    voice_name: str = Form(None),
+    extra_text: str = Form(
+        None,
+        description="Texte ajouté entre parenthèses après la question STT (ex. utilisateur reconnu).",
+    ),
+):
+    """
+    Endpoint multi-type pour le robot KODA. La réponse JSON contient :
+      - action: "text" | "music" | "motion" | "sleep" | "error"
+      - spoken_text: texte parlé par le robot (dans la langue du robot)
+      - audio_b64: WAV (base64) de `spoken_text` — toujours présent si spoken_text non vide
+      - music_url, music_title: si action=music (URL YouTube à télécharger via yt-dlp côté Pi)
+      - motion_command: si action=motion (forward/backward/left/right/stop)
+      - input_text: ce que Azure STT a transcrit (utile pour log/debug côté Pi)
+    """
+    if not file.content_type or not file.content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="Le fichier doit être un audio")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Le fichier audio est vide")
+
+    try:
+        result = service.audio_to_n8n_to_action(audio_bytes, voice_name, extra_text)
+        audio_out = result.pop("audio_bytes", b"") or b""
+        result["audio_b64"] = base64.b64encode(audio_out).decode("ascii") if audio_out else ""
+        result["audio_format"] = "wav"
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        try:
+            detail = f"Erreur pipeline audio->action: {e!s}"
+        except Exception:
+            detail = "Erreur pipeline audio->action."
         raise HTTPException(status_code=500, detail=detail)
 
 
