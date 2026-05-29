@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 import secrets
@@ -147,16 +148,15 @@ class ApiServiceImpl(IApiService):
         return self.client.table("note").update({"etat": val}).eq("id", note_id).execute().data
 
     # --- SETTINGS ---
-    def _primary_setting_id(self) -> Optional[int]:
-        """Clé primaire de la ligne setting (colonne id)."""
-        res = self.client.table("setting").select("id").limit(1).execute().data
+    # The `setting` table in Supabase uses `idkoda` (UUID) as primary key,
+    # NOT `id`. There is exactly one row per robot (single-tenant install).
+    def _primary_setting_key(self) -> Optional[str]:
+        """Renvoie l'identifiant `idkoda` de l'unique ligne `setting`."""
+        res = self.client.table("setting").select("idkoda").limit(1).execute().data
         if not res:
             return None
-        v = res[0].get("id")
-        try:
-            return int(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
+        v = res[0].get("idkoda")
+        return str(v) if v is not None else None
 
     def get_settings(self):
         res = self.client.table("setting").select("*").limit(1).execute().data
@@ -164,10 +164,20 @@ class ApiServiceImpl(IApiService):
 
     def modify_settings(self, settings_data: dict):
         fixed_data = self._fix_booleans(settings_data)
-        sid = self._primary_setting_id()
+        # Never let the client overwrite the primary key.
+        fixed_data.pop("idkoda", None)
+        if not fixed_data:
+            return None
+        sid = self._primary_setting_key()
         if sid is None:
             return None
-        return self.client.table("setting").update(fixed_data).eq("id", sid).execute().data
+        return (
+            self.client.table("setting")
+            .update(fixed_data)
+            .eq("idkoda", sid)
+            .execute()
+            .data
+        )
 
     def _get_robot_langue_from_setting(self):
         """Locale BCP‑47 ou identifiant de langue (ex. ar-SA, fr-FR) stockée dans setting.langue."""
@@ -392,15 +402,15 @@ class ApiServiceImpl(IApiService):
     # --- POWER ON / OFF ---
     # =========================================================
     def power_off(self):
-        sid = self._primary_setting_id()
+        sid = self._primary_setting_key()
         if sid is not None:
-            self.client.table("setting").update({"etat": 0}).eq("id", sid).execute()
+            self.client.table("setting").update({"etat": 0}).eq("idkoda", sid).execute()
         return {"status": "power_off", "etat": 0}
 
     def power_on(self):
-        sid = self._primary_setting_id()
+        sid = self._primary_setting_key()
         if sid is not None:
-            self.client.table("setting").update({"etat": 1}).eq("id", sid).execute()
+            self.client.table("setting").update({"etat": 1}).eq("idkoda", sid).execute()
         return {"status": "power_on", "etat": 1}
 
     # =========================================================
@@ -645,9 +655,12 @@ class ApiServiceImpl(IApiService):
     def _compose_stt_with_extra_text(stt_text: str, extra_text: Optional[str]) -> str:
         """Forme « question_vocale (texte_libre) » avant traduction / n8n."""
         base = (stt_text or "").strip()
-        if not extra_text or not str(extra_text).strip():
+        extra = (str(extra_text).strip() if extra_text else "")
+        if not extra:
             return base
-        return f"{base} ({str(extra_text).strip()})"
+        if not base:
+            return f"({extra})"
+        return f"{base} ({extra})"
 
     def audio_to_n8n_to_audio(self, audio_bytes: bytes, voice_name=None, extra_text=None):
         safe_console_line("========== Pipeline audio -> n8n -> audio ==========")
@@ -664,11 +677,14 @@ class ApiServiceImpl(IApiService):
         safe_console_line(
             f"Statut reconnaissance vocale : {stt_result.get('status') if isinstance(stt_result, dict) else 'unknown'}"
         )
-        if not input_text:
+        question_for_n8n = self._compose_stt_with_extra_text(input_text, extra_text)
+        if not question_for_n8n:
             safe_console_line("Erreur : aucun texte apres conversion voix -> texte.")
             raise RuntimeError("Aucun texte reconnu depuis l'audio.")
-
-        question_for_n8n = self._compose_stt_with_extra_text(input_text, extra_text)
+        if not input_text and extra_text and str(extra_text).strip():
+            safe_console_line(
+                f"STT vide — envoi n8n avec identite seule : {question_for_n8n!r}"
+            )
         if extra_text and str(extra_text).strip():
             safe_console_line(f"Texte client a ajouter entre parentheses : {str(extra_text).strip()}")
             safe_console_line(f"Question composee (voix + texte) : {question_for_n8n}")
@@ -724,6 +740,96 @@ class ApiServiceImpl(IApiService):
             "reply_text": reply_robot_lang,
             "audio_bytes": output_audio,
         }
+
+    # =========================================================
+    # --- YOUTUBE/MUSIC CACHE (yt-dlp on the backend) ---
+    # =========================================================
+    # The Pi often runs on a network that blocks outbound Internet (e.g. ISET school
+    # WiFi) but can reach the backend on the LAN. We therefore do the YouTube
+    # download here and serve the cached WAV via the StaticFiles mount in main.py.
+    _MUSIC_CACHE_DIR = Path("cache/music")
+    _YT_PLAYER_CLIENTS = ("android", "ios", "tv", "web")
+
+    @classmethod
+    def _music_cache_path_for(cls, url: str) -> Path:
+        cls._MUSIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+        return cls._MUSIC_CACHE_DIR / f"{digest}.wav"
+
+    def _download_youtube_to_cache(self, url: str, *, timeout_seconds: float = 90.0) -> Path:
+        """Ensure a YouTube URL is downloaded to the local music cache. Returns the cached WAV path.
+
+        Tries multiple yt-dlp player_client values to bypass YouTube's bot check.
+        Raises RuntimeError if every attempt fails.
+        """
+        if not url or not str(url).strip():
+            raise ValueError("_download_youtube_to_cache called with empty url")
+        url = str(url).strip()
+
+        cache_path = self._music_cache_path_for(url)
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            safe_console_line(f"[music] cache hit: {cache_path.name}")
+            return cache_path
+
+        if not shutil.which("yt-dlp"):
+            raise RuntimeError(
+                "yt-dlp not installed on the backend. Install with: pip install yt-dlp"
+            )
+
+        out_template = str(cache_path.with_suffix("")) + ".%(ext)s"
+        last_error = ""
+        for attempt, client in enumerate(self._YT_PLAYER_CLIENTS, start=1):
+            cmd = [
+                "yt-dlp",
+                "--quiet",
+                "--no-warnings",
+                "--no-playlist",
+                "--extract-audio",
+                "--audio-format", "wav",
+                "--audio-quality", "0",
+                "--extractor-args", f"youtube:player_client={client}",
+                "-o", out_template,
+                url,
+            ]
+            safe_console_line(
+                f"[music] yt-dlp attempt {attempt}/{len(self._YT_PLAYER_CLIENTS)} "
+                f"(player_client={client}) for {url}"
+            )
+            try:
+                completed = subprocess.run(
+                    cmd,
+                    timeout=timeout_seconds,
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+            except subprocess.TimeoutExpired:
+                last_error = f"timeout after {timeout_seconds:.0f}s (client={client})"
+                safe_console_line(f"[music] {last_error}")
+                continue
+            if completed.returncode == 0 and cache_path.exists() and cache_path.stat().st_size > 0:
+                safe_console_line(f"[music] cached: {cache_path.name} ({cache_path.stat().st_size} bytes)")
+                return cache_path
+            last_error = (completed.stderr or b"").decode("utf-8", errors="replace").strip()
+            safe_console_line(
+                f"[music] client={client} failed (code {completed.returncode}): {last_error[:200]}"
+            )
+            if cache_path.exists():
+                try:
+                    cache_path.unlink()
+                except OSError:
+                    pass
+        raise RuntimeError(
+            f"yt-dlp failed for all player clients ({', '.join(self._YT_PLAYER_CLIENTS)}). "
+            f"Last error: {last_error[:400]}"
+        )
+
+    @staticmethod
+    def _music_lan_url(cache_path: Path) -> str:
+        """Convert a local cache path into the URL the Pi will fetch over the LAN.
+        Uses a path-only URL so the FastAPI request's host header determines the origin
+        (works for SALAH_DESKTOP.local, raw IP, or anything else the Pi reaches us via).
+        """
+        return f"/cache/music/{cache_path.name}"
 
     # =========================================================
     # --- ACTION DISPATCHER (multi-type n8n responses) ---
@@ -866,10 +972,13 @@ class ApiServiceImpl(IApiService):
 
         stt_result = self.speech_to_text(audio_bytes)
         input_text = (stt_result or {}).get("text", "").strip()
-        if not input_text:
-            raise RuntimeError("Aucun texte reconnu depuis l'audio.")
-
         question_for_n8n = self._compose_stt_with_extra_text(input_text, extra_text)
+        if not question_for_n8n:
+            raise RuntimeError("Aucun texte reconnu depuis l'audio.")
+        if not input_text and extra_text and str(extra_text).strip():
+            safe_console_line(
+                f"STT vide — envoi n8n avec identite seule : {question_for_n8n!r}"
+            )
         if robot_tr == "fr":
             text_fr_for_n8n = question_for_n8n
         else:
@@ -881,6 +990,23 @@ class ApiServiceImpl(IApiService):
         envelope = self.n8n.trigger_workflow_raw({"message": text_fr_for_n8n})
         action = self._interpret_n8n_envelope(envelope)
         safe_console_line(f"Action interprétée : {action['action']} | command={action['motion_command']} | url={action['music_url']}")
+
+        # For music actions, do the YouTube download here (the Pi often has no public
+        # Internet but can always reach our LAN cache). On failure we degrade to a
+        # spoken apology rather than crashing the whole turn.
+        if action["action"] == "music" and action.get("music_url"):
+            try:
+                cache_path = self._download_youtube_to_cache(action["music_url"])
+                action["music_url"] = self._music_lan_url(cache_path)
+                safe_console_line(f"Music cached → served at {action['music_url']}")
+            except Exception as exc:
+                safe_console_line(f"Music download failed: {exc!s}")
+                action["action"] = "text"
+                action["music_url"] = None
+                action["music_title"] = None
+                action["spoken_text"] = (
+                    "Je n'arrive pas à télécharger cette musique, désolé"
+                )
 
         # Translate spoken_text to robot language if needed (announcements are French).
         spoken_fr = action.get("spoken_text") or ""

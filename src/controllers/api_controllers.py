@@ -1,8 +1,12 @@
+import asyncio
 import base64
+import json
+import logging
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from src.application.app_service_impl import ApiServiceImpl
+from src.application.wake_word_stream import WakeWordStreamSession
 from src.controllers.schemas import (
     AccompagnementCreate,
     AccompagnementUpdate,
@@ -548,6 +552,94 @@ async def speech_to_action(
         except Exception:
             detail = "Erreur pipeline audio->action."
         raise HTTPException(status_code=500, detail=detail)
+
+
+# ==============================================================
+# ENDPOINT WEBSOCKET — WAKE-WORD STREAMING (Pi → Azure STT)
+# ==============================================================
+_ws_logger = logging.getLogger("koda.ws.wake")
+
+
+@router.websocket("/ws/wake-word/{robot_id}")
+async def ws_wake_word(websocket: WebSocket, robot_id: str) -> None:
+    """Streaming wake-word recognition over WebSocket.
+
+    Protocol:
+      1. Client connects, sends ONE JSON config frame as text::
+
+            {"language": "ar-SA", "keywords": ["محسن", "mohsen", ...]}
+
+      2. Client then sends raw S16_LE 16 kHz mono PCM bytes as binary frames.
+      3. Server forwards bytes to Azure Speech `continuous_recognition` and
+         streams events back to the client (see WakeWordStreamSession).
+      4. Client can close at any time; we tear down the Azure session cleanly.
+    """
+    await websocket.accept()
+    _ws_logger.info("WS wake-word OPEN robot_id=%s client=%s", robot_id, websocket.client)
+
+    session: WakeWordStreamSession | None = None
+    send_lock = asyncio.Lock()
+
+    async def send_json(payload: dict) -> None:
+        if websocket.application_state.name != "CONNECTED":
+            return
+        async with send_lock:
+            try:
+                await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+            except Exception:
+                pass
+
+    try:
+        # 1) Read the config frame.
+        config_raw = await websocket.receive_text()
+        try:
+            config = json.loads(config_raw)
+        except json.JSONDecodeError as exc:
+            await send_json({"event": "error", "message": f"bad config JSON: {exc}"})
+            return
+        language = str(config.get("language") or "ar-SA").strip()
+        keywords = list(config.get("keywords") or [])
+        if not keywords:
+            await send_json({"event": "error", "message": "no keywords supplied"})
+            return
+
+        loop = asyncio.get_running_loop()
+        session = WakeWordStreamSession(
+            send_json,
+            language=language,
+            keywords=keywords,
+            loop=loop,
+        )
+        try:
+            await asyncio.to_thread(session.start)
+        except Exception as exc:
+            _ws_logger.exception("Failed to start Azure recognizer")
+            await send_json({"event": "error", "message": f"azure start failed: {exc}"})
+            return
+
+        # 2) Forward incoming PCM frames until the client disconnects.
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            data = msg.get("bytes")
+            if data is None:
+                # Could be a control text frame from the client (e.g. ping).
+                continue
+            # Push the PCM in a worker thread to avoid blocking the event loop.
+            await asyncio.to_thread(session.push_pcm, data)
+    except WebSocketDisconnect:
+        _ws_logger.info("WS wake-word DISCONNECT robot_id=%s", robot_id)
+    except Exception:
+        _ws_logger.exception("WS wake-word fatal error robot_id=%s", robot_id)
+    finally:
+        if session is not None:
+            await asyncio.to_thread(session.close)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        _ws_logger.info("WS wake-word CLOSED robot_id=%s", robot_id)
 
 
 # ==============================================================

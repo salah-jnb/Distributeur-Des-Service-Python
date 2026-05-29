@@ -10,7 +10,7 @@ deux fois : rpicam-still + rpicam-vid en parallèle échoue souvent).
 
 Sur le Pi :
   pip install flask requests
-  export FACE_API_BASE=http://192.168.1.103:8765
+  export FACE_API_BASE=http://192.168.1.103:8000
   python3 face_capture_web.py
 """
 
@@ -28,7 +28,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template_string
 
 # --- Backend (PC) ---
-FACE_API_BASE = os.environ.get("FACE_API_BASE", "http://192.168.1.103:8765").rstrip("/")
+FACE_API_BASE = os.environ.get("FACE_API_BASE", "http://192.168.1.103:8000").rstrip("/")
 IDENTIFY_URL = f"{FACE_API_BASE}/api/identify-face"
 
 PHOTO_DIR = os.environ.get("FACE_PHOTO_DIR", "/home/pi/photos")

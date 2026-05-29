@@ -1,12 +1,25 @@
 import logging
 import sys
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from src.controllers.api_controllers import router
 
 app = FastAPI(title="Système Distributeur PFE")
+
+# Music cache served read-only on the LAN: the Pi receives a URL like
+# http://<host>:<port>/cache/music/<sha1>.wav from /api/audio/speech-to-action
+# and streams it directly (cheaper than embedding ~5 MB in JSON).
+_MUSIC_CACHE_DIR = Path("cache/music").resolve()
+_MUSIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/cache/music",
+    StaticFiles(directory=str(_MUSIC_CACHE_DIR)),
+    name="music_cache",
+)
 
 
 @app.middleware("http")
@@ -49,7 +62,11 @@ def _configure_console_and_http_loggers():
 def list_routes():
     print("\n--- ROUTES ENREGISTRÉES ---")
     for route in app.routes:
-        print(f"[{route.methods}] {route.path}")
+        methods = getattr(route, "methods", None)
+        if methods:
+            print(f"[{methods}] {route.path}")
+        elif hasattr(route, "path"):
+            print(f"[MOUNT] {route.path}")
     print("---------------------------\n")
 
 @app.get("/")
