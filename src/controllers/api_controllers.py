@@ -407,12 +407,16 @@ async def identify_face(file: UploadFile = File(...)):
     """
     Compare la photo aux enregistrements de la table <b>imageuser</b> (URL),
     résout le <b>nom</b> via <b>utilisateur.iduser</b>, ou retourne <code>inconnu</code>.
+
+    Le calcul est CPU-bound (face_recognition + HOG) et sync — on le pousse
+    en threadpool pour ne pas geler l'event loop pendant que d'autres routes
+    (TTS, /audio/speech-to-action) tournent en parallèle au wake-word.
     """
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Le fichier doit être une image")
     image_bytes = await file.read()
     try:
-        name = service.identify_face(image_bytes)
+        name = await asyncio.to_thread(service.identify_face, image_bytes)
         return {"nom": name}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -452,7 +456,9 @@ async def speech_to_text(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Le fichier audio est vide")
 
     try:
-        return service.speech_to_text(audio_bytes)
+        # See speech_to_action: sync Azure SDK call → threadpool to keep the
+        # event loop free for concurrent face_id / WS frames during a turn.
+        return await asyncio.to_thread(service.speech_to_text, audio_bytes)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -494,7 +500,11 @@ async def speech_to_n8n_to_speech(
         raise HTTPException(status_code=400, detail="Le fichier audio est vide")
 
     try:
-        result = service.audio_to_n8n_to_audio(audio_bytes, voice_name, extra_text)
+        # See speech_to_action above: run sync pipeline in a worker thread so
+        # we don't block the event loop for the duration of the n8n round-trip.
+        result = await asyncio.to_thread(
+            service.audio_to_n8n_to_audio, audio_bytes, voice_name, extra_text,
+        )
         return StreamingResponse(
             iter([result["audio_bytes"]]),
             media_type="audio/wav",
@@ -539,7 +549,15 @@ async def speech_to_action(
         raise HTTPException(status_code=400, detail="Le fichier audio est vide")
 
     try:
-        result = service.audio_to_n8n_to_action(audio_bytes, voice_name, extra_text)
+        # Run the synchronous Azure-STT + n8n + Azure-TTS pipeline in a worker
+        # thread. With the previous `service.audio_to_n8n_to_action(...)`
+        # direct call inside an `async def` route, the whole pipeline (~5-30 s)
+        # blocked the event loop and serialized every other HTTP request from
+        # the Pi (face_id, TTS greeting, /trigger-n8n, even WebSocket frames).
+        # Wrapping in to_thread restores true concurrency.
+        result = await asyncio.to_thread(
+            service.audio_to_n8n_to_action, audio_bytes, voice_name, extra_text,
+        )
         audio_out = result.pop("audio_bytes", b"") or b""
         result["audio_b64"] = base64.b64encode(audio_out).decode("ascii") if audio_out else ""
         result["audio_format"] = "wav"

@@ -171,23 +171,49 @@ class ApiServiceImpl(IApiService):
         sid = self._primary_setting_key()
         if sid is None:
             return None
-        return (
+        result = (
             self.client.table("setting")
             .update(fixed_data)
             .eq("idkoda", sid)
             .execute()
             .data
         )
+        # New values must be visible to the next voice turn — drop the cache.
+        self._invalidate_setting_cache()
+        return result
+
+    # In-memory cache for setting.* reads: every voice turn calls these and a
+    # Supabase round-trip is 80-300 ms (LAN to Supabase + REST). 60 s TTL is
+    # long enough to cut ~250 ms per turn, short enough that the MAUI app's
+    # PUT /settings is reflected within a minute.
+    _SETTING_CACHE_TTL_S = 60.0
+
+    def _setting_cached(self, column: str):
+        """Return ``setting.<column>`` from cache (or fetch + cache)."""
+        if not hasattr(self, "_setting_cache"):
+            self._setting_cache: dict = {}
+            self._setting_cache_at: dict = {}
+        now = time.time()
+        cached_at = self._setting_cache_at.get(column, 0.0)
+        if (now - cached_at) < self._SETTING_CACHE_TTL_S and column in self._setting_cache:
+            return self._setting_cache[column]
+        try:
+            res = self.client.table("setting").select(column).limit(1).execute().data
+        except Exception:
+            return self._setting_cache.get(column)  # stale > nothing on failure
+        val = res[0].get(column) if res else None
+        self._setting_cache[column] = val
+        self._setting_cache_at[column] = now
+        return val
+
+    def _invalidate_setting_cache(self) -> None:
+        """Called from modify_settings so the next read picks the new values."""
+        if hasattr(self, "_setting_cache_at"):
+            self._setting_cache_at.clear()
 
     def _get_robot_langue_from_setting(self):
         """Locale BCP‑47 ou identifiant de langue (ex. ar-SA, fr-FR) stockée dans setting.langue."""
-        try:
-            res = self.client.table("setting").select("langue").limit(1).execute().data
-        except Exception:
-            return None
-        if not res:
-            return None
-        val = res[0].get("langue")
+        val = self._setting_cached("langue")
         if val is None:
             return None
         s = str(val).strip()
@@ -939,6 +965,12 @@ class ApiServiceImpl(IApiService):
         result["spoken_text"] = text_reply or text_body or ""
         return result
 
+    # Motion announcements are spoken on EVERY motion turn. TTS round-trip to
+    # Azure is 1-3 s — for 5 fixed strings, we cache the audio at first use
+    # and skip the synth call entirely on subsequent turns. Per-locale cache
+    # keyed by (locale, command).
+    _MOTION_TTS_CACHE: dict = {}
+
     @staticmethod
     def _motion_announcement(command: str) -> str:
         return {
@@ -948,6 +980,27 @@ class ApiServiceImpl(IApiService):
             "right": "OK, je tourne à droite",
             "stop": "Je m'arrête",
         }.get(command, "OK")
+
+    def _cached_motion_tts(
+        self,
+        command: str,
+        spoken_text: str,
+        robot_lang_setting: str,
+        voice_name: Optional[str],
+    ) -> bytes:
+        """Return TTS audio for a motion announcement, synthesising once per (lang, command)."""
+        if not spoken_text:
+            return b""
+        cache_key = (robot_lang_setting, command, spoken_text, voice_name or "")
+        cached = self._MOTION_TTS_CACHE.get(cache_key)
+        if cached is not None:
+            safe_console_line(f"[motion-tts] cache hit for {command!r} ({robot_lang_setting})")
+            return cached
+        chosen_voice = self._tts_voice_for_robot_locale(robot_lang_setting, voice_name)
+        audio = self.text_to_speech(spoken_text, chosen_voice)
+        self._MOTION_TTS_CACHE[cache_key] = audio
+        safe_console_line(f"[motion-tts] cached {command!r} for {robot_lang_setting} ({len(audio)} bytes)")
+        return audio
 
     def audio_to_n8n_to_action(self, audio_bytes: bytes, voice_name=None, extra_text=None):
         """
@@ -965,12 +1018,25 @@ class ApiServiceImpl(IApiService):
               "motion_command": str | None,
             }
         """
+        import time as _time
+        t_pipeline_start = _time.perf_counter()
+
+        def _step_log(label: str, t_step_start: float) -> None:
+            ms = int((_time.perf_counter() - t_step_start) * 1000)
+            total_ms = int((_time.perf_counter() - t_pipeline_start) * 1000)
+            safe_console_line(f"⏱️  [{ms:5d} ms]  {label:<22}  (total {total_ms} ms)")
+
         safe_console_line("========== Pipeline audio -> n8n -> action ==========")
+        t_step = _time.perf_counter()
         langue_brute = self._get_robot_langue_from_setting()
         robot_lang_setting = self._canonical_locale_for_speech_and_translation(langue_brute)
         robot_tr = self._bcp47_primary(robot_lang_setting)
+        _step_log("setting.langue lookup", t_step)
 
+        t_step = _time.perf_counter()
         stt_result = self.speech_to_text(audio_bytes)
+        _step_log("STT (Azure recognize)", t_step)
+
         input_text = (stt_result or {}).get("text", "").strip()
         question_for_n8n = self._compose_stt_with_extra_text(input_text, extra_text)
         if not question_for_n8n:
@@ -979,15 +1045,20 @@ class ApiServiceImpl(IApiService):
             safe_console_line(
                 f"STT vide — envoi n8n avec identite seule : {question_for_n8n!r}"
             )
+
+        t_step = _time.perf_counter()
         if robot_tr == "fr":
             text_fr_for_n8n = question_for_n8n
         else:
             text_fr_for_n8n = self.translator.translate_text(
                 question_for_n8n, robot_lang_setting, "fr-FR"
             )
+        _step_log(f"translate→fr (tr={robot_tr})", t_step)
 
-        safe_console_line(f"Envoi n8n (raw): {text_fr_for_n8n!r}")
+        t_step = _time.perf_counter()
         envelope = self.n8n.trigger_workflow_raw({"message": text_fr_for_n8n})
+        _step_log("n8n webhook roundtrip", t_step)
+
         action = self._interpret_n8n_envelope(envelope)
         safe_console_line(f"Action interprétée : {action['action']} | command={action['motion_command']} | url={action['music_url']}")
 
@@ -995,6 +1066,7 @@ class ApiServiceImpl(IApiService):
         # Internet but can always reach our LAN cache). On failure we degrade to a
         # spoken apology rather than crashing the whole turn.
         if action["action"] == "music" and action.get("music_url"):
+            t_step = _time.perf_counter()
             try:
                 cache_path = self._download_youtube_to_cache(action["music_url"])
                 action["music_url"] = self._music_lan_url(cache_path)
@@ -1007,8 +1079,10 @@ class ApiServiceImpl(IApiService):
                 action["spoken_text"] = (
                     "Je n'arrive pas à télécharger cette musique, désolé"
                 )
+            _step_log("yt-dlp download", t_step)
 
         # Translate spoken_text to robot language if needed (announcements are French).
+        t_step = _time.perf_counter()
         spoken_fr = action.get("spoken_text") or ""
         if not spoken_fr:
             spoken_robot = ""
@@ -1020,10 +1094,28 @@ class ApiServiceImpl(IApiService):
             except Exception:
                 # Translation hiccups should not block the action — fall back to French.
                 spoken_robot = spoken_fr
+        _step_log(f"translate→{robot_tr}", t_step)
 
-        chosen_voice = self._tts_voice_for_robot_locale(robot_lang_setting, voice_name)
-        audio_out = self.text_to_speech(spoken_robot, chosen_voice) if spoken_robot else b""
+        t_step = _time.perf_counter()
+        if action["action"] == "motion" and action.get("motion_command"):
+            # Hit the per-(locale, command) cache — saves ~1-3s on every
+            # forward/backward/left/right/stop after the first use.
+            audio_out = self._cached_motion_tts(
+                action["motion_command"], spoken_robot, robot_lang_setting, voice_name,
+            )
+            _step_log("TTS (motion cached)", t_step)
+        elif spoken_robot:
+            chosen_voice = self._tts_voice_for_robot_locale(robot_lang_setting, voice_name)
+            audio_out = self.text_to_speech(spoken_robot, chosen_voice)
+            _step_log("TTS (Azure synthesize)", t_step)
+        else:
+            audio_out = b""
+            _step_log("TTS skipped (empty text)", t_step)
 
+        safe_console_line(
+            f"========== Pipeline complete: action={action['action']} "
+            f"total={int((_time.perf_counter() - t_pipeline_start) * 1000)} ms =========="
+        )
         return {
             "action": action["action"],
             "robot_lang": robot_lang_setting,
@@ -1100,10 +1192,7 @@ class ApiServiceImpl(IApiService):
         return None
 
     def _get_robot_name_from_setting(self):
-        res = self.client.table("setting").select("name").limit(1).execute().data
-        if not res:
-            return None
-        return res[0].get("name")
+        return self._setting_cached("name")
 
     def _get_known_faces(self):
         now = time.time()
