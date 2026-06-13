@@ -14,15 +14,27 @@ from src.infrastructure.safe_console import safe_console_line
 _DEFAULT_N8N_TIMEOUT_S = float(os.getenv("N8N_TIMEOUT_S", "30"))
 
 
+_DEFAULT_GREET_WEBHOOK_URL = "http://localhost:5678/webhook/7f1955c0-9016-4cdd-b116-5e7c9476f6d8"
+
+
 class N8NClient:
     def __init__(self):
         self.webhook_url = os.getenv("N8N_WEBHOOK_URL")
+        # Second workflow ("greet by name"): the robot calls this after 5 minutes
+        # of silence with the recognised user name. n8n returns a sentence (e.g.
+        # "Bonjour Salah, tu vas bien ?") that the backend translates + TTS-es
+        # and the Pi plays back. URL is overridable via the env var so it can
+        # match the user's n8n deployment.
+        self.greet_webhook_url = os.getenv("N8N_GREET_WEBHOOK_URL", _DEFAULT_GREET_WEBHOOK_URL)
         self.timeout_s = _DEFAULT_N8N_TIMEOUT_S
         # Shared async client (HTTP/1.1 keep-alive). Created lazily so import
         # of this module doesn't require a running event loop.
         self._async_client: httpx.AsyncClient | None = None
         safe_console_line(
             f"DEBUG: URL n8n chargée depuis le .env -> {self.webhook_url}  (timeout={self.timeout_s}s)"
+        )
+        safe_console_line(
+            f"DEBUG: URL n8n greet (passive 5 min) -> {self.greet_webhook_url}"
         )
         self._warn_if_test_url()
 
@@ -114,6 +126,125 @@ class N8NClient:
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             safe_console_line(f"[N8N] (async) ❌ ERROR after {elapsed_ms}ms: {str(e)}")
+            return {
+                "ok": False, "content_type": None, "status_code": None,
+                "json": None, "text": None,
+                "error": str(e),
+            }
+
+    async def trigger_greet_workflow_async(self, data: dict, timeout_s: float | None = None):
+        """Async POST to the *greet* workflow (passive 5-min idle wake).
+
+        Same envelope shape as `trigger_workflow_raw_async`. Separate method so
+        callers don't accidentally hit the main conversation workflow with a
+        greet payload — and so we can tune the timeout independently if the
+        greet workflow ever gets a different runtime profile.
+        """
+        if not self.greet_webhook_url:
+            return {
+                "ok": False, "content_type": None, "status_code": None,
+                "json": None, "text": None,
+                "error": "N8N_GREET_WEBHOOK_URL non configuré",
+            }
+        eff_timeout = timeout_s if timeout_s and timeout_s > 0 else self.timeout_s
+        client = self._ensure_async_client()
+        t0 = time.perf_counter()
+        try:
+            safe_console_line(
+                f"[N8N greet] (async) → POST payload={data}  (timeout={eff_timeout}s)"
+            )
+            response = await client.post(self.greet_webhook_url, json=data, timeout=eff_timeout)
+            response.raise_for_status()
+            content_type = (response.headers.get("content-type") or "").lower()
+            envelope = {
+                "ok": True,
+                "content_type": content_type,
+                "status_code": response.status_code,
+                "json": None,
+                "text": response.text,
+                "error": None,
+            }
+            if "application/json" in content_type:
+                try:
+                    envelope["json"] = response.json()
+                except ValueError:
+                    pass
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            safe_console_line(
+                f"[N8N greet] (async) ← {elapsed_ms}ms HTTP {response.status_code} type={content_type!r}"
+            )
+            return envelope
+        except httpx.TimeoutException:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            safe_console_line(
+                f"[N8N greet] (async) ⏱️  TIMEOUT after {elapsed_ms}ms (limit={eff_timeout}s)"
+            )
+            return {
+                "ok": False, "content_type": None, "status_code": None,
+                "json": None, "text": None,
+                "error": f"n8n greet timeout after {eff_timeout}s",
+            }
+        except asyncio.CancelledError:
+            safe_console_line("[N8N greet] (async) cancelled by caller")
+            raise
+        except Exception as e:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            safe_console_line(f"[N8N greet] (async) ❌ ERROR after {elapsed_ms}ms: {str(e)}")
+            return {
+                "ok": False, "content_type": None, "status_code": None,
+                "json": None, "text": None,
+                "error": str(e),
+            }
+
+    def trigger_greet_workflow(self, data: dict, timeout_s: float | None = None):
+        """Sync POST to the greet workflow — same envelope shape as
+        ``trigger_workflow_raw``. Used by `name_to_action` running in a worker
+        thread (FastAPI route stays async)."""
+        if not self.greet_webhook_url:
+            return {
+                "ok": False, "content_type": None, "status_code": None,
+                "json": None, "text": None,
+                "error": "N8N_GREET_WEBHOOK_URL non configuré",
+            }
+        eff_timeout = timeout_s if timeout_s and timeout_s > 0 else self.timeout_s
+        t0 = time.perf_counter()
+        try:
+            safe_console_line(
+                f"[N8N greet] → POST {self.greet_webhook_url}  payload={data}  (timeout={eff_timeout}s)"
+            )
+            response = requests.post(self.greet_webhook_url, json=data, timeout=eff_timeout)
+            response.raise_for_status()
+            content_type = (response.headers.get("content-type") or "").lower()
+            envelope = {
+                "ok": True,
+                "content_type": content_type,
+                "status_code": response.status_code,
+                "json": None,
+                "text": response.text,
+                "error": None,
+            }
+            if "application/json" in content_type:
+                try:
+                    envelope["json"] = response.json()
+                except ValueError:
+                    pass
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            safe_console_line(
+                f"[N8N greet] ← {elapsed_ms}ms HTTP {response.status_code} type={content_type!r}: "
+                f"{(envelope['json'] if envelope['json'] is not None else envelope['text'])!s}"
+            )
+            return envelope
+        except requests.exceptions.Timeout:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            safe_console_line(f"[N8N greet] ⏱️  TIMEOUT after {elapsed_ms}ms (limit={eff_timeout}s)")
+            return {
+                "ok": False, "content_type": None, "status_code": None,
+                "json": None, "text": None,
+                "error": f"n8n greet timeout after {eff_timeout}s",
+            }
+        except Exception as e:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            safe_console_line(f"[N8N greet] ❌ ERROR after {elapsed_ms}ms: {str(e)}")
             return {
                 "ok": False, "content_type": None, "status_code": None,
                 "json": None, "text": None,

@@ -1201,6 +1201,106 @@ class ApiServiceImpl(IApiService):
         }
 
     # =========================================================
+    # --- PASSIVE GREET PIPELINE (5-minute idle wake) ---
+    # =========================================================
+    def name_to_action(self, nom: str, voice_name=None):
+        """Pipeline démarrage de conversation : nom -> n8n greet -> TTS.
+
+        Déclenché par la Pi après 5 minutes d'inactivité. Pas de STT
+        (la Pi a déjà identifié le visage). Pipeline :
+            nom (str)
+              -> traduction vers français (si la langue robot != fr)
+              -> webhook n8n greet (workflow "démarrer la conversation")
+              -> traduction du résultat vers la langue du robot
+              -> Azure TTS
+              -> renvoie le même shape que audio_to_n8n_to_action.
+
+        Returns:
+            {
+              "action": "text",
+              "robot_lang": str,
+              "input_text": str,           # le nom envoyé
+              "spoken_text": str,          # texte parlé (langue du robot)
+              "audio_bytes": bytes,        # WAV TTS du spoken_text
+              "music_url": None,
+              "music_title": None,
+              "motion_command": None,
+            }
+        """
+        import time as _time
+        t_pipeline_start = _time.perf_counter()
+
+        def _step_log(label: str, t_step_start: float) -> None:
+            ms = int((_time.perf_counter() - t_step_start) * 1000)
+            total_ms = int((_time.perf_counter() - t_pipeline_start) * 1000)
+            safe_console_line(f"⏱️  [{ms:5d} ms]  {label:<24}  (total {total_ms} ms)")
+
+        safe_console_line("========== Pipeline greet (nom -> n8n -> action) ==========")
+        clean_name = (nom or "").strip() or "inconnu"
+
+        t_step = _time.perf_counter()
+        langue_brute = self._get_robot_langue_from_setting()
+        robot_lang_setting = self._canonical_locale_for_speech_and_translation(langue_brute)
+        robot_tr = self._bcp47_primary(robot_lang_setting)
+        _step_log("setting.langue lookup", t_step)
+
+        # Payload envoyé à n8n : on garde la clé `nom` que le workflow attend,
+        # plus une clé `message` "Bonjour, voici la personne devant moi : <nom>"
+        # pour les workflows qui s'attendent au format conversationnel standard.
+        n8n_payload = {"nom": clean_name, "message": clean_name}
+
+        t_step = _time.perf_counter()
+        envelope = self.n8n.trigger_greet_workflow(n8n_payload)
+        _step_log("n8n greet roundtrip", t_step)
+
+        if not envelope.get("ok"):
+            err = envelope.get("error") or "n8n greet failed"
+            safe_console_line(f"Erreur n8n greet : {err}")
+            raise RuntimeError(err)
+
+        reply_fr = self._extract_text_from_n8n_response(
+            envelope.get("json") if envelope.get("json") is not None else envelope.get("text")
+        )
+        if not reply_fr:
+            raise RuntimeError("Le workflow greet n'a pas renvoyé de texte exploitable.")
+        safe_console_line(f"Réponse n8n greet (FR) : {reply_fr!r}")
+
+        # Traduction vers la langue du robot (le workflow renvoie du FR).
+        t_step = _time.perf_counter()
+        if robot_tr == "fr":
+            spoken_robot = reply_fr
+        else:
+            try:
+                spoken_robot = self.translator.translate_text(reply_fr, "fr-FR", robot_lang_setting)
+            except Exception:
+                # Translation hiccups ne doivent pas bloquer le greet — on
+                # retombe sur le français.
+                safe_console_line("Traduction echouee — fallback FR")
+                spoken_robot = reply_fr
+        _step_log(f"translate→{robot_tr}", t_step)
+
+        # TTS
+        t_step = _time.perf_counter()
+        chosen_voice = self._tts_voice_for_robot_locale(robot_lang_setting, voice_name)
+        audio_out = self.text_to_speech(spoken_robot, chosen_voice)
+        _step_log("TTS (Azure synthesize)", t_step)
+
+        safe_console_line(
+            f"========== Greet complete: nom={clean_name!r} "
+            f"total={int((_time.perf_counter() - t_pipeline_start) * 1000)} ms =========="
+        )
+        return {
+            "action": "text",
+            "robot_lang": robot_lang_setting,
+            "input_text": clean_name,
+            "spoken_text": spoken_robot,
+            "audio_bytes": audio_out,
+            "music_url": None,
+            "music_title": None,
+            "motion_command": None,
+        }
+
+    # =========================================================
     # --- GEMINI KEYWORDS ---
     # =========================================================
     def generate_robot_name_keywords(self):

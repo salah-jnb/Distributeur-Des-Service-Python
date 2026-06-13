@@ -62,6 +62,12 @@ class TextToSpeechRequest(BaseModel):
     voice_name: Optional[str] = None
 
 
+# ---- WEBHOOK GREET (passive 5-min idle wake) ----
+class NomGreetRequest(BaseModel):
+    nom: str = Field(..., min_length=1, max_length=120, description="Nom de l'utilisateur reconnu (ou 'inconnu')")
+    voice_name: Optional[str] = None
+
+
 # ---- UTILISATEUR ----
 class UtilisateurCreate(BaseModel):
     nom: str

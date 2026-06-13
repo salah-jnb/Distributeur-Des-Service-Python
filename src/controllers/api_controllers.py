@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -25,6 +26,7 @@ from src.controllers.schemas import (
     ImageUserCreate,
     ImageUserUpdate,
     LoginRequest,
+    NomGreetRequest,
     NoteCreate,
     NoteUpdate,
     SettingUpdate,
@@ -522,6 +524,49 @@ async def speech_to_n8n_to_speech(
 
 
 @router.post(
+    "/webhook/nom",
+    summary="Greet par nom -> n8n -> action (TTS embarqué)",
+)
+async def webhook_nom(payload: NomGreetRequest):
+    """Démarrage de conversation par la Pi après 5 min d'inactivité.
+
+    Pipeline interne :
+        nom -> n8n greet workflow -> traduction langue robot -> TTS -> JSON.
+
+    La réponse JSON a exactement le même shape que ``/audio/speech-to-action``
+    pour que la Pi puisse réutiliser son dispatcher d'action existant
+    (action="text", audio_b64=WAV TTS, spoken_text, ...).
+
+    Test rapide :
+        curl -X POST http://127.0.0.1:8000/api/webhook/nom \\
+             -H "Content-Type: application/json" \\
+             -d '{"nom": "Salah"}'
+    """
+    nom = (payload.nom or "").strip()
+    if not nom:
+        raise HTTPException(status_code=400, detail="Le champ 'nom' est requis.")
+
+    try:
+        # Sync pipeline (translate + n8n + TTS) déplacé dans un worker thread
+        # pour ne pas bloquer la boucle asyncio FastAPI.
+        result = await asyncio.to_thread(
+            service.name_to_action, nom, payload.voice_name,
+        )
+        audio_out = result.pop("audio_bytes", b"") or b""
+        result["audio_b64"] = base64.b64encode(audio_out).decode("ascii") if audio_out else ""
+        result["audio_format"] = "wav"
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        try:
+            detail = f"Erreur pipeline greet: {e!s}"
+        except Exception:
+            detail = "Erreur pipeline greet."
+        raise HTTPException(status_code=500, detail=detail)
+
+
+@router.post(
     "/audio/speech-to-action",
     summary="Audio -> texte -> n8n -> action (text/music/motion/sleep) avec WAV embarqué",
 )
@@ -637,6 +682,9 @@ async def ws_wake_word(websocket: WebSocket, robot_id: str) -> None:
             return
 
         # 2) Forward incoming PCM frames until the client disconnects.
+        pcm_chunks = 0
+        pcm_bytes = 0
+        last_pcm_log = time.perf_counter()
         while True:
             msg = await websocket.receive()
             if msg.get("type") == "websocket.disconnect":
@@ -645,6 +693,19 @@ async def ws_wake_word(websocket: WebSocket, robot_id: str) -> None:
             if data is None:
                 # Could be a control text frame from the client (e.g. ping).
                 continue
+            pcm_chunks += 1
+            pcm_bytes += len(data)
+            now = time.perf_counter()
+            if pcm_chunks == 1 or (now - last_pcm_log) >= 4.0:
+                last_pcm_log = now
+                _ws_logger.info(
+                    "WS wake-word PCM robot_id=%s chunks=%d bytes=%d pcm_s=%.1f last_chunk=%d",
+                    robot_id,
+                    pcm_chunks,
+                    pcm_bytes,
+                    pcm_bytes / 32000.0,
+                    len(data),
+                )
             # Push the PCM in a worker thread to avoid blocking the event loop.
             await asyncio.to_thread(session.push_pcm, data)
     except WebSocketDisconnect:
@@ -672,6 +733,7 @@ def get_robot_name_keywords():
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur Gemini keywords: {str(e)}")
+<<<<<<< Updated upstream
 
 
 # ==============================================================
@@ -701,3 +763,5 @@ def trigger_nightly_users_manual():
 )
 def get_nightly_users_trigger_status():
     return get_scheduler_status()
+=======
+>>>>>>> Stashed changes
