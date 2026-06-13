@@ -7,8 +7,15 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from src.controllers.api_controllers import router
+from src.application.app_service_impl import ApiServiceImpl
+from src.application.nightly_scheduler import (
+    get_scheduler_status,
+    start_nightly_scheduler,
+    stop_nightly_scheduler,
+)
 
 app = FastAPI(title="Système Distributeur PFE")
+_nightly_service = ApiServiceImpl()
 
 # Music cache served read-only on the LAN: the Pi receives a URL like
 # http://<host>:<port>/cache/music/<sha1>.wav from /api/audio/speech-to-action
@@ -68,6 +75,17 @@ def list_routes():
         elif hasattr(route, "path"):
             print(f"[MOUNT] {route.path}")
     print("---------------------------\n")
+
+
+@app.on_event("startup")
+def _start_nightly_user_scheduler():
+    start_nightly_scheduler(_nightly_service.run_nightly_user_webhook_trigger)
+
+
+@app.on_event("shutdown")
+def _stop_nightly_user_scheduler():
+    stop_nightly_scheduler()
+
 
 @app.get("/")
 def home():

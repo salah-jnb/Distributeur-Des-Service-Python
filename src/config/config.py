@@ -59,6 +59,16 @@ class Settings:
     # Colonne date agenda en base (schéma : date_modifiction)
     SUPABASE_AGENDA_DATE_COLUMN = os.getenv("SUPABASE_AGENDA_DATE_COLUMN", "date_modifiction")
 
+    # Déclencheur nocturne : webhook n8n par utilisateur (00:00 par défaut)
+    NIGHTLY_USER_WEBHOOK_URL = os.getenv(
+        "NIGHTLY_USER_WEBHOOK_URL",
+        "http://localhost:5678/webhook/60fca303-14f2-4922-ab8e-764566b57e85",
+    )
+    NIGHTLY_USER_TRIGGER_ENABLED = _env_bool("NIGHTLY_USER_TRIGGER_ENABLED", True)
+    NIGHTLY_TRIGGER_HOUR = int(os.getenv("NIGHTLY_TRIGGER_HOUR", "0"))
+    NIGHTLY_TRIGGER_MINUTE = int(os.getenv("NIGHTLY_TRIGGER_MINUTE", "0"))
+    NIGHTLY_USER_WEBHOOK_TIMEOUT_S = float(os.getenv("NIGHTLY_USER_WEBHOOK_TIMEOUT_S", "30"))
+
 
 _TTS_VOICE_MAP = _build_tts_voice_map()
 

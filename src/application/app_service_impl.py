@@ -337,6 +337,79 @@ class ApiServiceImpl(IApiService):
         return self.n8n.trigger_workflow(body)
 
     # =========================================================
+    # --- DÉCLENCHEUR NOCTURNE (webhook n8n par utilisateur) ---
+    # =========================================================
+    def run_nightly_user_webhook_trigger(self) -> dict:
+        """
+        Récupère tous les utilisateurs (table utilisateur) et appelle le webhook n8n
+        une fois par personne, avec le paramètre ``user`` = nom (ex. oussema, salah).
+        """
+        webhook_url = (settings.NIGHTLY_USER_WEBHOOK_URL or "").strip()
+        if not webhook_url:
+            raise RuntimeError("NIGHTLY_USER_WEBHOOK_URL non configuré dans le .env")
+
+        timeout_s = settings.NIGHTLY_USER_WEBHOOK_TIMEOUT_S
+        users = self.client.table("utilisateur").select("iduser, nom").execute().data or []
+
+        results = []
+        for row in users:
+            nom = (row.get("nom") or "").strip()
+            if not nom:
+                results.append({
+                    "iduser": row.get("iduser"),
+                    "nom": None,
+                    "ok": False,
+                    "skipped": True,
+                    "error": "nom vide",
+                })
+                continue
+
+            request_url = f"{webhook_url}?user={nom}"
+            payload = {"user": nom}
+            try:
+                safe_console_line(f"[NIGHTLY] → POST {request_url}  payload={payload}")
+                response = httpx.post(
+                    webhook_url,
+                    params={"user": nom},
+                    json=payload,
+                    timeout=timeout_s,
+                )
+                ok = response.is_success
+                results.append({
+                    "iduser": row.get("iduser"),
+                    "nom": nom,
+                    "ok": ok,
+                    "status_code": response.status_code,
+                    "request_url": request_url,
+                    "response": (response.text or "")[:500],
+                })
+                safe_console_line(
+                    f"[NIGHTLY] ← {nom}: HTTP {response.status_code}"
+                )
+            except Exception as exc:
+                safe_console_line(f"[NIGHTLY] ❌ {nom}: {exc!s}")
+                results.append({
+                    "iduser": row.get("iduser"),
+                    "nom": nom,
+                    "ok": False,
+                    "request_url": request_url,
+                    "error": str(exc),
+                })
+
+        success_count = sum(1 for r in results if r.get("ok"))
+        skipped_count = sum(1 for r in results if r.get("skipped"))
+        return {
+            "status": "completed",
+            "webhook_url": webhook_url,
+            "users_total": len(users),
+            "users_processed": len(results) - skipped_count,
+            "success_count": success_count,
+            "failure_count": len(results) - success_count - skipped_count,
+            "skipped_count": skipped_count,
+            "results": results,
+        }
+
+    # =========================================================
     # --- AGENDA ---
     # =========================================================
     def get_all_agendas(self):

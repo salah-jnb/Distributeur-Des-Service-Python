@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from src.application.app_service_impl import ApiServiceImpl
+from src.application.nightly_scheduler import get_scheduler_status
 from src.application.wake_word_stream import WakeWordStreamSession
 from src.controllers.schemas import (
     AccompagnementCreate,
@@ -671,3 +672,32 @@ def get_robot_name_keywords():
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur Gemini keywords: {str(e)}")
+
+
+# ==============================================================
+# DÉCLENCHEUR NOCTURNE — webhook n8n par utilisateur (00:00)
+# ==============================================================
+@router.post(
+    "/triggers/nightly-users",
+    summary="Déclencher manuellement le webhook n8n pour chaque utilisateur",
+)
+def trigger_nightly_users_manual():
+    """
+    Test manuel : récupère tous les utilisateurs de la table ``utilisateur``
+    et appelle le webhook n8n une fois par nom (ex. ?user=oussema, ?user=salah).
+    Même logique que le job automatique de minuit.
+    """
+    try:
+        return service.run_nightly_user_webhook_trigger()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur déclencheur nocturne: {str(e)}")
+
+
+@router.get(
+    "/triggers/nightly-users/status",
+    summary="État du scheduler du déclencheur nocturne",
+)
+def get_nightly_users_trigger_status():
+    return get_scheduler_status()
